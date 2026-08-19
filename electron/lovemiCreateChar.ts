@@ -1,4 +1,7 @@
 import { createHash, randomUUID, randomInt as cryptoRandomInt } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
+import { app } from 'electron'
 import { fetch as undiciFetch } from 'undici'
 import { dispatcherFor } from './mailProbe'
 import { loadCreateCharSecrets, saveCreateCharSecrets } from './createCharSecrets'
@@ -132,8 +135,8 @@ SEXUAL KINK RULES（性癖 = 生理/性需求，不是性格）：
 - Keep it adult, specific, and character-flavored. Do NOT write vague「性格温柔」as 性癖.
 
 NAME RULES:
-- display_name: cute girl name matching the character's language/region. For Chinese East Asian prefer 2–3 Chinese characters (e.g. 瑾萱、雨婷、梦洁、依依) — NEVER default to the same name like 柚子 every run. Vary every time. NO digits. Never leave blank.
-- The app will re-roll a regional cute name if needed; model should still invent varied names.
+- display_name: invent a UNIQUE cute **Chinese** girl name (2 **or** 3 汉字，三字也要常有). NEVER reuse 柚子/千夏/陽葵/芽衣/宁宁/瑾萱/葵/琴音 or any name you just used.
+- The app WILL replace display_name from a large unused Chinese pool — still invent varied CN names; never blank; NO digits; avoid JP-only names unless the character is clearly Japanese.
 
 RELATIONSHIP RULES:
 - relationship_tags MUST be exactly ONE string randomly chosen from:
@@ -333,123 +336,194 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
   payload.relationship_tags = [relPool[Math.floor(Math.random() * relPool.length)]]
 }
 
-/** 按语言/地区的可爱女孩名；中文偏三字网感甜名 */
-const NAME_POOL_ZH = [
-  '之桃',
-  '瑾萱',
-  '雨婷',
-  '依依',
-  '梦洁',
-  '诗涵',
-  '可馨',
-  '婉儿',
-  '若溪',
-  '思甜',
-  '语嫣',
-  '清欢',
-  '念安',
-  '晚棠',
-  '软软',
-  '桃桃',
-  '星河',
-  '小满',
-  '知夏',
-  '初晴',
-  '青柠',
-  '糖糖',
-  '糯米',
-  '阿梨',
-  '苏苏',
-  '安安',
-  '柠柠',
-  '豆豆',
-  '月月',
-  '星子',
-  '晚晚',
-  '小鹿',
-  '念念',
-  '清清',
-  '雪梨',
-  '佳怡',
-  '欣妍',
-  '雨桐',
-  '思涵',
-  '雅淇',
-  '可儿',
-  '梦瑶',
-  '梓涵',
-  '一诺',
-  '语桐',
-  '诗琪',
-  '晓彤',
-  '佳宁',
-  '心怡',
-  '若曦',
+/** 按语言/地区的可爱女孩名（大词库，避免连抽撞名） */
+const NAME_POOL_ZH_SEED = [
+  '之桃', '雨婷', '依依', '梦洁', '诗涵', '可馨', '婉儿', '若溪', '思甜',
+  '语嫣', '清欢', '念安', '晚棠', '软软', '桃桃', '星河', '小满', '知夏', '初晴',
+  '青柠', '糖糖', '糯米', '阿梨', '苏苏', '安安', '柠柠', '豆豆', '月月', '星子',
+  '晚晚', '小鹿', '念念', '清清', '雪梨', '佳怡', '欣妍', '雨桐', '思涵', '雅淇',
+  '可儿', '梦瑶', '梓涵', '一诺', '语桐', '诗琪', '晓彤', '佳宁', '心怡', '若曦',
+  '沐橙', '听澜', '惜夏', '霜降', '青禾', '梨落', '枕星', '软糖',
+  '蜜梨', '杏子', '棠梨', '苏茉', '澄澄', '欢喜', '拾光', '半夏',
+  '微甜', '浅唱', '云舒', '晚风', '花序', '南枝', '北岛', '东篱',
+  '夏禾', '秋拾', '春岚', '冬芽', '柔枝', '细雪', '轻舟', '浅夏', '暖冬',
+  '青柠糖', '小团子', '蜜桃酱', '草莓味', '牛奶糖', '棉花糖', '布丁酱',
+  '抹茶圆', '芝士球', '糯叽叽', '甜甜圈', '焦糖卷', '香芋泥', '芋泥球',
+  '果果', '芽芽', '朵朵', '梨梨', '杏杏', '橙橙', '柠芽', '桃芝',
+  '芝芝', '茉茉', '萱萱', '涵涵', '桐桐', '琪琪', '妍妍', '怡怡', '诺诺',
+  '彤彤', '淇淇', '瑶瑶', '曦曦', '婉婉', '甜甜', '安可', '可甜', '可萌', '可心',
+  '心心', '如意', '如初', '如愿', '如梦', '如雪', '如烟', '如画', '如歌', '如诗',
+  '诗诗', '小棠', '小禾', '小岚', '小芽', '小澄', '小拾',
+  '南南', '北北', '岚岚', '禾禾', '枝枝', '雪雪', '舟舟',
+  '舒舒', '喜喜', '夏夏', '秋秋', '春春', '冬冬', '柔柔',
+  '浅浅', '暖暖', '青青', '白柠', '青杏', '蜜杏', '蜜棠',
+  '苏梨', '梨棠', '棠棠', '茉梨', '星枕', '枕枕', '糖梨',
+  '软桃', '桃蜜', '晚星', '星晚', '清念', '语清', '嫣语',
+  '思若', '若婉', '可诗', '诗梦', '梦依', '依雨', '知初',
+  '林晚', '苏清', '沈念', '顾夏', '叶软', '温知', '江浅', '白禾',
+  '楚棠', '唐梨', '陆杏', '乔澄', '纪岚', '阮芽', '裴柔', '安予',
+  '言溪', '予安', '林拾', '苏半', '沈微', '顾浅', '叶初', '温星',
+  '江月', '白秋', '楚春', '唐冬', '陆欢', '乔喜', '纪光', '阮舒',
+  '裴诗', '安画', '言歌', '予烟', '林雪', '苏梦', '沈愿', '顾心',
+  '叶甜', '温可', '江萌', '白心', '楚意', '唐宁', '陆依', '乔婉',
+  '纪若', '阮思', '裴语', '安嫣', '言涵', '予萱', '林淇', '苏妍',
+  '沈怡', '顾诺', '叶彤', '温瑶', '江曦', '白桐', '楚琪', '唐晴',
+  '陆溪', '乔桃', '纪糖', '阮茉', '裴芝', '安橙', '言柠', '予杏',
+  '晚清', '清软', '软念', '念知', '知半', '半拾', '拾浅', '浅微',
+  '微初', '初星', '星月', '月禾', '禾棠', '棠梨', '梨杏', '杏澄',
+  '澄岚', '岚芽', '芽柔', '柔细', '细轻', '轻暖', '暖青', '青南',
+  '南枝', '枝秋', '秋春', '春冬', '冬欢', '欢喜', '喜光', '光舒',
+  '舒诗', '诗画', '画歌', '歌烟', '烟雪', '雪梦', '梦愿', '愿心',
+  '心甜', '甜可', '可萌', '萌安', '安宁', '宁依', '依婉', '婉若',
+  '若思', '思语', '语嫣', '嫣涵', '涵萱', '萱淇', '淇妍', '妍怡',
+  '怡诺', '诺彤', '彤瑶', '瑶曦', '曦桐', '桐琪', '琪晴', '晴溪',
 ]
 
+/** 组合生成：二字 + 大量三字，避免总是两字甜名 */
+const ZH_PREFIX = [
+  '林', '苏', '沈', '顾', '叶', '夏', '温', '江', '白', '楚', '唐', '陆', '乔', '纪', '阮',
+  '裴', '卫', '安', '言', '予', '晚', '清', '软', '念', '知', '半', '拾', '浅', '微', '初',
+  '星', '月', '禾', '棠', '梨', '杏', '澄', '岚', '芽', '柔', '青', '南', '北', '秋', '春',
+  '冬', '欢', '喜', '光', '舒', '诗', '画', '烟', '雪', '梦', '愿', '心', '甜', '可', '萌',
+]
+const ZH_MID = [
+  '晚', '清', '软', '念', '知', '半', '拾', '浅', '微', '初', '星', '月', '禾', '棠', '梨',
+  '杏', '澄', '岚', '芽', '柔', '青', '南', '秋', '春', '冬', '欢', '喜', '光', '舒', '诗',
+  '雪', '梦', '愿', '心', '甜', '可', '萌', '安', '宁', '依', '婉', '若', '思', '语', '嫣',
+  '涵', '萱', '淇', '妍', '怡', '诺', '彤', '瑶', '曦', '桐', '琪', '晴', '溪', '桃', '糖',
+]
+const ZH_SUFFIX = [
+  '晚', '清', '软', '念', '知', '半', '拾', '浅', '微', '初', '星', '月', '禾', '棠', '梨',
+  '杏', '澄', '岚', '芽', '柔', '细', '轻', '暖', '青', '南', '枝', '秋', '春', '冬', '欢',
+  '喜', '光', '舒', '诗', '画', '歌', '烟', '雪', '梦', '愿', '心', '甜', '可', '萌', '安',
+  '宁', '依', '婉', '若', '思', '语', '嫣', '涵', '萱', '淇', '妍', '怡', '诺', '彤', '瑶',
+  '曦', '桐', '琪', '晴', '溪', '桃', '糖', '茉', '芝', '橙', '柠', '满', '儿', '子', '酱',
+]
+
+const NAME_POOL_ZH_TRI_SEED = [
+  '青柠糖', '小团子', '蜜桃酱', '草莓味', '牛奶糖', '棉花糖', '布丁酱',
+  '抹茶圆', '芝士球', '糯叽叽', '甜甜圈', '焦糖卷', '香芋泥', '芋泥球',
+  '林晚清', '苏念安', '沈知夏', '顾浅夏', '叶软糖', '温半夏', '江拾光', '白微甜',
+  '楚初晴', '唐星河', '陆云舒', '乔晚棠', '纪梨落', '阮枕星', '裴春岚', '安冬芽',
+  '言清欢', '予若溪', '林诗涵', '苏心怡', '沈若曦', '顾沐橙', '叶听澜', '温惜夏',
+  '江青禾', '白棠梨', '楚苏茉', '唐欢喜', '陆浅唱', '乔细雪', '纪轻舟', '阮暖冬',
+  '裴南枝', '安北岛', '言东篱', '予夏禾', '林秋拾', '苏柔枝', '沈花序', '顾星子',
+  '叶小满', '温知夏', '江初晴', '白雪梨', '楚佳怡', '唐欣妍', '陆雨桐', '乔思涵',
+  '纪雅淇', '阮可儿', '裴梦瑶', '安梓涵', '言一诺', '予诗琪', '林晓彤', '苏佳宁',
+  '沈小棠', '顾小禾', '叶小岚', '温小芽', '江小澄', '白小拾', '楚糯米', '唐软糖',
+  '陆蜜梨', '乔杏子', '纪澄澄', '阮晚晚', '裴念念', '安清清', '言甜甜', '予安安',
+  '林可甜', '苏可萌', '沈可心', '顾如意', '叶如初', '温如愿', '江如梦', '白如雪',
+  '楚如烟', '唐如画', '陆如歌', '乔如诗', '纪诗诗', '阮萱萱', '裴涵涵', '安瑶瑶',
+  '言曦曦', '予婉婉', '林彤彤', '苏淇淇', '沈妍妍', '顾怡怡', '叶诺诺', '温桐桐',
+  '江琪琪', '白茉茉', '楚芝芝', '唐橙橙', '陆柠芽', '乔桃芝', '纪芽芽', '阮朵朵',
+  '裴果果', '安梨梨', '言杏杏', '予禾禾', '林岚岚', '苏枝枝', '沈雪雪', '顾舟舟',
+  '叶舒舒', '温喜喜', '江夏夏', '白秋秋', '楚春春', '唐冬冬', '陆柔柔', '乔浅浅',
+  '纪暖暖', '阮青青', '裴糖梨', '安星枕', '言枕枕', '予晚星', '林星晚', '苏清念',
+  '沈语清', '顾嫣语', '叶思若', '温若婉', '江可诗', '白诗梦', '楚梦依', '唐依雨',
+  '陆知初', '乔半夏', '纪拾光', '阮微甜', '裴浅夏', '安深秋', '言暖冬', '予青柠',
+  '小清欢', '小若溪', '小诗涵', '小心怡', '小若曦', '小沐橙', '小听澜', '小惜夏',
+  '阿清欢', '阿若溪', '阿诗涵', '阿心怡', '阿若曦', '阿沐橙', '阿半夏', '阿枕星',
+]
+
+function buildZhNamePool(): string[] {
+  const set = new Set<string>([...NAME_POOL_ZH_SEED, ...NAME_POOL_ZH_TRI_SEED])
+  // 二字：前缀×后缀
+  for (const a of ZH_PREFIX) {
+    for (const b of ZH_SUFFIX) {
+      if (a === b) continue
+      set.add(`${a}${b}`)
+    }
+  }
+  // 三字：前缀×中字×后缀（去重、禁止三字全同）
+  for (const a of ZH_PREFIX) {
+    for (const m of ZH_MID) {
+      for (const b of ZH_SUFFIX) {
+        if (a === m && m === b) continue
+        const n = `${a}${m}${b}`
+        if (n.length === 3) set.add(n)
+      }
+    }
+  }
+  // 三字：小/阿 + 二字组合
+  for (const t of ['小', '阿']) {
+    for (const a of ZH_PREFIX.slice(0, 40)) {
+      for (const b of ZH_SUFFIX.slice(0, 50)) {
+        if (a === b) continue
+        set.add(`${t}${a}${b}`)
+      }
+    }
+  }
+  // 三字叠音昵称：小晴晴 / 阿念念
+  for (const t of ['小', '阿']) {
+    for (const b of ZH_SUFFIX) {
+      set.add(`${t}${b}${b}`)
+    }
+  }
+  return [...set]
+}
+
+const NAME_POOL_ZH = buildZhNamePool()
+const NAME_POOL_ZH_TWO = NAME_POOL_ZH.filter((n) => n.length === 2)
+const NAME_POOL_ZH_THREE = NAME_POOL_ZH.filter((n) => n.length === 3)
+
 const NAME_POOL_JP = [
-  '美咲',
-  '陽葵',
-  '結衣',
-  '葵',
-  '凛',
-  '咲良',
-  '千夏',
-  '柚葉',
-  '琴音',
-  '奈々',
-  '美穂',
-  '彩花',
-  '優奈',
-  '心春',
-  '莉子',
-  '桜',
-  '芽衣',
-  '紗季',
-  '日向',
-  '和泉',
+  '美咲', '結衣', '凛', '咲良', '柚葉', '奈々',
+  '美穂', '彩花', '優奈', '心春', '莉子', '桜', '紗季', '日向', '和泉',
+  '花音', '美月', '玲奈', '愛梨', '真央', '香織', '七海', '彩乃', '陽菜',
+  '結菜', '美羽', '里奈', '柚希', '愛菜', '美桜', '琴葉', '紗奈', '優花', '心結',
+  '芽依', '桜花', '美優', '莉奈', '陽向', '和花', '彩月', '美鈴', '愛美', '真結',
+  '香奈', '七緒', '彩葉', '陽香', '結月', '美音', '里桜', '柚奈', '愛羽',
 ]
 
 const NAME_POOL_KR = [
-  '智雅',
-  '素妍',
-  '敏知',
-  '荷娜',
-  '有真',
-  '秀雅',
-  '恩地',
-  '多喜',
-  '艺琳',
-  '佳恩',
-  '世娜',
-  '知恩',
-  '秀彬',
-  '雨珍',
-  '多恩',
-  '夏琳',
+  '智雅', '素妍', '敏知', '荷娜', '有真', '秀雅', '恩地', '多喜', '艺琳', '佳恩',
+  '世娜', '知恩', '秀彬', '雨珍', '多恩', '夏琳', '惠娜', '智恩', '素英', '敏雅',
+  '荷真', '有娜', '秀恩', '恩雅', '多琳', '艺娜', '佳真', '世恩', '知雅', '秀娜',
+  '雨恩', '多雅', '夏娜', '惠恩', '智琳', '素娜', '敏恩', '荷雅', '有恩', '秀真',
 ]
 
 const NAME_POOL_EN = [
-  'Lily',
-  'Mia',
-  'Emma',
-  'Ava',
-  'Chloe',
-  'Nora',
-  'Iris',
-  'Ruby',
-  'Luna',
-  'Ella',
-  'Zoe',
-  'Ivy',
-  'Nina',
-  'Cora',
-  'Sadie',
-  'Hazel',
+  'Lily', 'Mia', 'Emma', 'Ava', 'Chloe', 'Nora', 'Iris', 'Ruby', 'Luna', 'Ella',
+  'Zoe', 'Ivy', 'Nina', 'Cora', 'Sadie', 'Hazel', 'Aria', 'Mila', 'Layla',
+  'Ellie', 'Stella', 'Violet', 'Aurora', 'Willow', 'Piper', 'Quinn', 'Remi', 'Skye', 'Tessa',
+  'Willa', 'Zara', 'Bella', 'Daisy', 'Freya', 'Grace', 'Holly', 'June', 'Kate', 'Lacey',
+  'Maya', 'Noelle', 'Olive', 'Pearl', 'Rosie', 'Sage', 'Tara', 'Uma', 'Vera', 'Wren',
 ]
 
-/** 最近用过的名字，避免连抽重复（尤其别老抽到同一个） */
+/** 进程内最近用过 + 落盘历史，严禁连抽撞名 */
 const recentDisplayNames: string[] = []
+let usedNamesCache: string[] | null = null
+
+function usedNamesPath(): string {
+  try {
+    return path.join(app.getPath('userData'), 'create-char-used-names.json')
+  } catch {
+    return path.join(process.cwd(), 'create-char-used-names.json')
+  }
+}
+
+function loadUsedNames(): string[] {
+  try {
+    const raw = fs.readFileSync(usedNamesPath(), 'utf8')
+    const arr = JSON.parse(raw) as unknown
+    return Array.isArray(arr) ? arr.map(String).filter(Boolean) : []
+  } catch {
+    return []
+  }
+}
+
+function getUsedNames(): string[] {
+  if (!usedNamesCache) usedNamesCache = loadUsedNames()
+  return usedNamesCache
+}
+
+function saveUsedNames(names: string[]) {
+  try {
+    fs.writeFileSync(usedNamesPath(), JSON.stringify(names.slice(-1200)), 'utf8')
+  } catch {
+    /* ignore */
+  }
+}
 
 function randomInt(max: number) {
   if (max <= 0) return 0
@@ -457,25 +531,74 @@ function randomInt(max: number) {
 }
 
 function pickFromPool(pool: string[], avoid: string[] = []) {
-  const filtered = pool.filter((n) => !avoid.includes(n) && !recentDisplayNames.includes(n))
-  const use = filtered.length ? filtered : pool.filter((n) => !avoid.includes(n))
-  const list = use.length ? use : pool
-  return list[randomInt(list.length)]
+  const blocked = new Set(
+    [...getUsedNames(), ...recentDisplayNames, ...avoid].map((n) => String(n).trim()).filter(Boolean),
+  )
+  // 中文：约一半抽三字，避免总是两字
+  let candidates = pool
+  if (pool === NAME_POOL_ZH || pool.length > 2000) {
+    const wantThree = randomInt(100) < 48
+    const sliced = wantThree
+      ? NAME_POOL_ZH_THREE.filter((n) => !blocked.has(n))
+      : NAME_POOL_ZH_TWO.filter((n) => !blocked.has(n))
+    if (sliced.length) candidates = sliced
+    else {
+      const anyFresh = pool.filter((n) => !blocked.has(n))
+      if (anyFresh.length) candidates = anyFresh
+    }
+  } else {
+    candidates = pool.filter((n) => !blocked.has(n))
+  }
+  if (candidates.length) return candidates[randomInt(candidates.length)]
+
+  // 兜底再组合：优先三字
+  if (pool === NAME_POOL_ZH || pool.length > 500) {
+    for (let i = 0; i < 100; i++) {
+      const wantThree = i % 2 === 0
+      let n: string
+      if (wantThree) {
+        const a = ZH_PREFIX[randomInt(ZH_PREFIX.length)]
+        const m = ZH_MID[randomInt(ZH_MID.length)]
+        const b = ZH_SUFFIX[randomInt(ZH_SUFFIX.length)]
+        n = `${a}${m}${b}`
+      } else {
+        const a = ZH_PREFIX[randomInt(ZH_PREFIX.length)]
+        const b = ZH_SUFFIX[randomInt(ZH_SUFFIX.length)]
+        if (a === b) continue
+        n = `${a}${b}`
+      }
+      if (!blocked.has(n)) return n
+    }
+  }
+  const notRecent = pool.filter((n) => !recentDisplayNames.includes(n) && !blocked.has(n))
+  const list = notRecent.length ? notRecent : pool.filter((n) => !avoid.includes(n))
+  const use = list.length ? list : pool
+  return use[randomInt(use.length)]
 }
 
 function nameRegionFromPayload(payload: Record<string, unknown>): 'zh' | 'jp' | 'kr' | 'en' {
   const region = String(payload.ancestry_region || '')
   const ancestry = JSON.stringify(payload.ancestry_tags || [])
-  const blob = `${region} ${ancestry} ${JSON.stringify(payload.appearance_tags || [])}`.toLowerCase()
-  if (/日|japan|japanese|和风|日系/.test(blob)) return 'jp'
-  if (/韩|korea|korean|韩系|韩风/.test(blob)) return 'kr'
+  const appearance = JSON.stringify(payload.appearance_tags || [])
+  const blob = `${region} ${ancestry} ${appearance}`.toLowerCase()
   if (
     region === 'western' ||
-    /欧美|欧洲|western|caucasian|european|英|美|法|德/.test(blob)
+    /欧美|欧洲|western|caucasian|european|英伦|法式|德系/.test(blob)
   ) {
     return 'en'
   }
-  // 默认东亚华语三字甜名
+  // 明确韩国风才用韩名
+  if (/(^|[^日])韩系|韩国|korean|korea|首尔|韩风/.test(blob) && !/中国|华语|中式|chinese/.test(blob)) {
+    return 'kr'
+  }
+  // 明确日本风才用日名（「日系」 alone 不够 — 东亚立绘常误标日系导致撞 千夏/陽葵）
+  if (
+    (/日本|和风|和服|京都|japanese|japan/.test(blob) || /日系萌|纯日系/.test(blob)) &&
+    !/中国|华语|中式|chinese|汉服/.test(blob)
+  ) {
+    return 'jp'
+  }
+  // 默认：中文甜名（词库最大，最不易撞）
   return 'zh'
 }
 
@@ -501,11 +624,27 @@ const OVERUSED_NAMES = new Set([
   '小雪',
   '小雨',
   '美少女',
+  '千夏',
+  '陽葵',
+  '芽衣',
+  '宁宁',
+  '瑾萱',
+  '葵',
+  '琴音',
+  '和泉',
+  '美穂',
+  '柚葉',
+  '结衣',
+  '結衣',
+  '美咲',
+  '西柚',
+  '柚柚',
+  '蜜桃',
 ])
 
 /**
- * 可爱女孩名：按地区语言抽；用户 hint 指定则尊重。
- * 默认不信任模型老返回「柚子」——无指定就重抽。
+ * 可爱女孩名：默认中文大词库抽**未用过**的；用户 hint 指定则尊重。
+ * 不信任模型返回名（极易撞车）。
  */
 function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) {
   const hinted = extractNameFromUserHint(userHint)
@@ -517,31 +656,26 @@ function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) 
 
   const raw = typeof payload.display_name === 'string' ? payload.display_name.trim() : ''
   const cleaned = raw.replace(/\d+/g, '').trim()
-  const bad =
-    !cleaned ||
-    OVERUSED_NAMES.has(cleaned) ||
-    /角色|未命名|null|undefined|character|girl|woman/i.test(cleaned)
-
-  // 无用户指定：按地区随机；过热名（柚子等）必换；正常模型名仅 30% 保留
   const lang = nameRegionFromPayload(payload)
   const pool =
     lang === 'jp' ? NAME_POOL_JP : lang === 'kr' ? NAME_POOL_KR : lang === 'en' ? NAME_POOL_EN : NAME_POOL_ZH
-  const keepModel =
-    !bad &&
-    cleaned.length >= 2 &&
-    cleaned.length <= 4 &&
-    ((lang === 'zh' && /^[\u4e00-\u9fff·]+$/.test(cleaned)) ||
-      (lang === 'jp' && cleaned.length >= 1) ||
-      (lang === 'en' && /^[A-Za-z]+$/.test(cleaned))) &&
-    cryptoRandomInt(10) < 3
-  const name = keepModel ? cleaned : pickFromPool(pool, [cleaned, '柚子', '小柚'])
+  // 一律重抽未用名；模型名仅作 avoid，绝不直接采用（防连撞）
+  const name = pickFromPool(pool, [cleaned, ...OVERUSED_NAMES])
   payload.display_name = name
   rememberName(name)
 }
 
 function rememberName(name: string) {
-  recentDisplayNames.push(name)
-  while (recentDisplayNames.length > 24) recentDisplayNames.shift()
+  const n = (name || '').trim()
+  if (!n) return
+  recentDisplayNames.push(n)
+  while (recentDisplayNames.length > 80) recentDisplayNames.shift()
+  const used = getUsedNames()
+  if (!used.includes(n)) {
+    used.push(n)
+    usedNamesCache = used
+    saveUsedNames(used)
+  }
 }
 
 const SEXUAL_KINK_POOL = [
@@ -692,7 +826,7 @@ export async function analyzeReferenceImage(input: {
       'If East Asian: HARD lock 东亚中日韩面孔 everywhere — ancestry/tags/portrait_prompt MUST say 东亚 and FORBID 欧美脸; moe 超级娇羞粘人.',
       'If Western: perfect identity lock, premium realism.',
       '性癖 MUST be real sexual preference (足交/被口/SM/骑乘等), NEVER「喜欢被夸奖」类性格.',
-      'display_name: vary cute girl names by region (CN 瑾萱/雨婷/梦洁; JP/KR/EN accordingly); NEVER always 柚子.',
+      'display_name: UNIQUE cute Chinese 2–3字名 each run; never 柚子/千夏/陽葵/琴音等老面孔；NO digits.',
       hint ? `\nUser notes (must respect for name/lore/occupation):\n${hint}` : '',
     ]
       .filter(Boolean)

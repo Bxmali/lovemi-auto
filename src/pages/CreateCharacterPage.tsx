@@ -98,6 +98,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const mimeType = draft.mimeType
   const payloadText = draft.payloadText
   const portraitUrl = draft.portraitUrl
+  const portraitCdnUrl = draft.portraitCdnUrl
   const portraitPrompt = draft.portraitPrompt
   const busy = draft.busy
   const wantPortrait = draft.wantPortrait
@@ -205,26 +206,48 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       displayNameOverride?: string,
     ) => {
       const slotId = slot ?? useCreateCharStore.getState().activeSlot
+      const write = (p: Parameters<typeof patchSlot>[1]) => patchSlot(slotId, p)
       if (!cdnOrUrl?.startsWith('http')) return
       const cacheKey = `${slotId}:${cdnOrUrl}`
       if (portraitSaveTried.current.has(cacheKey)) return
       if (!window.lovemi?.createCharCacheMedia) return
-      portraitSaveTried.current.add(cacheKey)
       const outbound = await resolveProxyUrl()
-      if (!outbound.proxyUrl) return
+      if (!outbound.proxyUrl) {
+        setToast(outbound.error || '无代理，立绘预览可能加载失败', 5000)
+        return
+      }
+      // 成功前不占 tried，失败可重试
+      portraitSaveTried.current.add(cacheKey)
       const name = (displayNameOverride || characterDisplayName(slotId)).trim() || '未命名'
-      const res = await window.lovemi.createCharCacheMedia({
-        cdnUrl: cdnOrUrl,
-        proxyUrl: outbound.proxyUrl,
-        displayName: `${name}_槽${slotId}`,
-        kind: 'portrait',
-      })
-      if (res.ok && res.twitterPath) {
-        pushStep(slotId, 'ok', `立绘已存推特资源 · ${name}`)
-        setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
+      try {
+        const res = await window.lovemi.createCharCacheMedia({
+          cdnUrl: cdnOrUrl,
+          proxyUrl: outbound.proxyUrl,
+          displayName: `${name}_槽${slotId}`,
+          kind: 'portrait',
+        })
+        if (res.ok && res.cacheUrl) {
+          // 关键必须用本地 cache；CDN 直链在渲染进程常黑/裂（无代理）
+          write({
+            portraitUrl: res.cacheUrl,
+            portraitCdnUrl: cdnOrUrl,
+          })
+          if (res.twitterPath) {
+            pushStep(slotId, 'ok', `立绘已存推特资源 · ${name}`)
+            setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
+          } else {
+            pushStep(slotId, 'ok', '立绘预览已缓存')
+          }
+        } else {
+          portraitSaveTried.current.delete(cacheKey)
+          setToast(res.error || `槽${slotId}：立绘缓存失败`, 6000)
+        }
+      } catch (err) {
+        portraitSaveTried.current.delete(cacheKey)
+        setToast(err instanceof Error ? err.message : '立绘缓存异常', 6000)
       }
     },
-    [setToast, characterDisplayName, pushStep],
+    [patchSlot, setToast, characterDisplayName, pushStep],
   )
 
   const waitMaxSec =
@@ -299,6 +322,18 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     patchSlot,
     ensurePortraitDownloaded,
   ])
+
+  /** CDN 直链无法在渲染进程稳定显示 → 经代理落到 lovemi-cache:// */
+  useEffect(() => {
+    if (!active) return
+    const cdn =
+      (portraitCdnUrl?.startsWith('http') && portraitCdnUrl) ||
+      (portraitUrl?.startsWith('http') && portraitUrl) ||
+      null
+    if (!cdn) return
+    if (portraitUrl?.startsWith('lovemi-cache://') || portraitUrl?.startsWith('data:')) return
+    void ensurePortraitDownloaded(cdn, activeSlot)
+  }, [active, activeSlot, portraitUrl, portraitCdnUrl, ensurePortraitDownloaded])
 
   /** 等待立绘时前端也快刷：站内已出图时不必干等主进程慢循环 */
   useEffect(() => {
@@ -1365,6 +1400,15 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                 src={portraitUrl}
                 alt="portrait"
                 onClick={() => setLightbox({ src: portraitUrl, kind: 'image' })}
+                onError={() => {
+                  const cdn =
+                    (portraitCdnUrl?.startsWith('http') && portraitCdnUrl) ||
+                    (portraitUrl.startsWith('http') && portraitUrl) ||
+                    null
+                  if (!cdn) return
+                  portraitSaveTried.current.delete(`${activeSlot}:${cdn}`)
+                  void ensurePortraitDownloaded(cdn, activeSlot)
+                }}
                 title="点击放大"
                 style={{
                   maxWidth: '100%',

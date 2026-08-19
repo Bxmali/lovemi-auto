@@ -16,26 +16,25 @@ import {
 import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemiCompanionVideo'
 import { acceptVisualReference, setPreviewAndMaybePublish } from './lovemiPublish'
 
-const MOTION_PROMPT_SYSTEM = `你是成人向短视频导演，专为 Lovemi companion「催视频」写中文提示词。
-根据立绘/角色气质，输出一段**可直接发给 companion 的催视频文案+画面指令**（或纯画面提示词均可），用于生成约 5 秒竖屏动态预览。
+const MOTION_PROMPT_SYSTEM = `你是成人向短视频导演，给 Lovemi companion 写**极简**中文催视频提示词。
 
 硬性要求：
-- 角色一律视为**已确认年满 21 岁的成年女性**；禁止任何未成年/幼态/学生制服暗示
-- 中文；约 80–220 字；只返回提示词正文，不要 JSON、不要引号包裹、不要解释、不要拒写说教
-- 感觉：很诱惑、暧昧、呼吸感、发丝轻晃、眼神勾人、身体微动；写真级真实感；成人内容允许
-- 时长与构图暗示：5 秒、9:16 竖屏、半身或近景
-- 禁止：换脸、夸张变形、瞬移、文字水印、多镜头硬切、年龄相关敏感词
-- 若角色为东亚/中日韩：必须反复写「东亚面孔/中日韩五官」，禁止跑成欧美脸；强化娇羞粘人、欲拒还迎
-- 若偏写实西式：高级冷感欲感，保持参考身份`
+- 角色一律**已确认年满 21 岁成年女性**；禁止未成年/幼态/学生暗示
+- 中文；**30–60 字**；只返回提示词正文，不要 JSON、不要解释、不要拒写
+- 核心只要「很诱人」：眼神、呼吸、发丝、浅笑 —— **一个微动就够**
+- **严禁复杂动作**：禁止转身、舞蹈、多步骤手势、走位、道具戏、大幅度肢体
+- 5 秒、9:16 竖屏、半身近景；几乎静止的暧昧特写
+- 禁止：换脸、夸张变形、瞬移、水印、多镜头
+- 东亚角色：写「东亚面孔」；娇羞勾人即可`
+
+const FALLBACK_MOTION_PROMPT =
+  '5秒竖屏9:16半身近景，成年东亚女性，眼神勾人，轻轻呼吸，发丝微晃，嘴角浅笑，很诱人，几乎静止，禁止复杂动作与换脸。'
 
 function isMotionPromptRefusal(text: string): boolean {
   return /不能帮你|无法协助|我不能|拒[绝写]|未成年|近未成年|underage|as an ai|i can'?t|i cannot|sorry,? i/i.test(
     text,
   )
 }
-
-const FALLBACK_MOTION_PROMPT =
-  '5秒竖屏9:16，半身近景，写真级真实感。成年东亚女性，发丝轻晃，呼吸起伏，眼神勾人，嘴角微扬，肩线与锁骨随呼吸微动，暧昧欲感，镜头轻微推进，禁止换脸变形。'
 
 function teamoHeaders(apiKey: string) {
   return {
@@ -85,18 +84,18 @@ export async function generateSeductiveMotionPrompt(input: {
   const url = `${secrets.teamoApiBase.replace(/\/$/, '')}/chat/completions`
   const userText = [
     dataUrl
-      ? '请根据这张角色立绘，写催视频/动态预览提示词。'
-      : '没有可用立绘图，请根据文字描述写催视频/动态预览提示词。',
-    input.characterHint ? `角色补充：${input.characterHint}` : '',
-    input.appearanceHint ? `外观摘要：${input.appearanceHint}` : '',
+      ? '根据这张立绘，写极简催视频词：很诱人，几乎静止，一个微动。'
+      : '根据文字描述，写极简催视频词：很诱人，几乎静止，一个微动。',
+    input.characterHint ? `角色：${input.characterHint}` : '',
+    input.appearanceHint
+      ? `气质参考（勿写动作清单）：${input.appearanceHint.slice(0, 120)}`
+      : '',
     /东亚|中日韩|华裔|日系|韩系|萌妹|east.?asian/i.test(
       `${input.characterHint || ''} ${input.appearanceHint || ''}`,
     )
-      ? '【东亚锁】画面必须是东亚中日韩面孔，禁止欧美五官跑偏；提示词里写明东亚。'
+      ? '锁东亚面孔。'
       : '',
-    /脚|足|脚掌|脚心|丝袜|蕾丝袜|裤袜/.test(input.appearanceHint || '')
-      ? '【足部锁】参考有脚则动态里也要保留脚部前景/脚掌朝向/袜足细节，禁止省略脚或乱加高跟鞋。'
-      : '',
+    '只允许：呼吸 / 眨眼 / 发丝晃 / 浅笑 之一。禁止转身、舞蹈、多步骤。30–60字。',
   ]
     .filter(Boolean)
     .join('\n')
@@ -113,7 +112,7 @@ export async function generateSeductiveMotionPrompt(input: {
       signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
         model: secrets.teamoModel || 'gpt-5.4-mini',
-        temperature: 0.7,
+        temperature: 0.4,
         messages: [
           { role: 'system', content: MOTION_PROMPT_SYSTEM },
           dataUrl
