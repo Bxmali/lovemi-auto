@@ -1,0 +1,40 @@
+{
+  "name": "lovemi-auto",
+  "private": true,
+  "version": "0.1.0",
+  "productName": "Lovemi Auto",
+  "description": "Lovemi 专属自动化平台",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "env -u ELECTRON_RUN_AS_NODE vite",
+    "build": "env -u ELECTRON_RUN_AS_NODE vite build",
+    "typecheck": "tsc -b --pretty false",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@tanstack/react-virtual": "^3.13.12",
+    "concurrently": "^10.0.5",
+    "cross-env": "^10.1.0",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
+    "gsap": "^3.15.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "undici": "^8.10.0",
+    "wait-on": "^9.1.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "oxlint": "^1.75.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.7"
+  }
+}

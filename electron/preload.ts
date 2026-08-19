@@ -1,0 +1,470 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+export type ProbeInput = {
+  email: string
+  authMode: string
+  refreshToken?: string
+  clientId?: string
+  proxyUrl?: string
+  forceUrlProxy?: boolean
+  fallbackDirect?: boolean
+}
+
+export type ProbeResult = {
+  ok: boolean
+  email: string
+  error?: string
+  refreshToken?: string
+  displayName?: string
+  via?: string
+}
+
+export type ProxyTestResult = {
+  localPortOpen: boolean
+  viaProxy: { ok: boolean; error?: string; status?: number }
+  direct: { ok: boolean; error?: string; status?: number }
+  urlProxyKind: 'vless-subscription' | 'http-proxy' | 'unknown' | 'empty'
+  urlProxyHint: string
+  recommendation: string
+}
+
+export type MailProxyResolve = {
+  running: boolean
+  proxyUrl?: string
+  nodeServer?: string
+  error?: string
+  source: 'vless' | 'fallback-local' | 'none'
+}
+
+export type RegisterInput = {
+  email: string
+  refreshToken?: string
+  clientId?: string
+  proxyUrl?: string
+  password?: string
+  displayName?: string
+}
+
+export type RegisterResult = {
+  ok: boolean
+  email: string
+  error?: string
+  challengeId?: string
+  otp?: string
+  otpSource?: 'dev_otp' | 'graph_mail'
+  password?: string
+  userId?: string
+  sessionToken?: string
+  refreshToken?: string
+}
+
+export type LoginInput = {
+  email: string
+  password?: string
+  refreshToken?: string
+  clientId?: string
+  proxyUrl?: string
+}
+
+export type LoginResult = {
+  ok: boolean
+  email: string
+  error?: string
+  sessionToken?: string
+  userId?: string
+  expiresAt?: string
+}
+
+contextBridge.exposeInMainWorld('lovemi', {
+  loadAccounts: () => ipcRenderer.invoke('accounts:load') as Promise<string | null>,
+  saveAccounts: (plaintext: string) =>
+    ipcRenderer.invoke('accounts:save', plaintext) as Promise<{ ok: boolean; encrypted: boolean }>,
+  probeAccount: (input: ProbeInput) =>
+    ipcRenderer.invoke('mail:probe', input) as Promise<ProbeResult>,
+  probeBatch: (inputs: ProbeInput[]) =>
+    ipcRenderer.invoke('mail:probeBatch', inputs) as Promise<ProbeResult[]>,
+  registerLovemi: (input: RegisterInput) =>
+    ipcRenderer.invoke('lovemi:register', input) as Promise<RegisterResult>,
+  registerLovemiBatch: (inputs: RegisterInput[]) =>
+    ipcRenderer.invoke('lovemi:registerBatch', inputs) as Promise<RegisterResult[]>,
+  loginLovemi: (input: LoginInput) =>
+    ipcRenderer.invoke('lovemi:login', input) as Promise<LoginResult>,
+  resetLovemiPassword: (input: {
+    email: string
+    refreshToken?: string
+    clientId?: string
+    proxyUrl?: string
+    newPassword?: string
+  }) =>
+    ipcRenderer.invoke('lovemi:resetPassword', input) as Promise<{
+      ok: boolean
+      email: string
+      error?: string
+      password?: string
+      sessionToken?: string
+      userId?: string
+    }>,
+  lovemiMe: (input: { sessionToken: string; proxyUrl?: string; email?: string }) =>
+    ipcRenderer.invoke('lovemi:me', input) as Promise<{
+      ok: boolean
+      email?: string
+      error?: string
+      data?: Record<string, unknown>
+    }>,
+  testProxy: (input: { localProxyUrl?: string; urlProxy?: string }) =>
+    ipcRenderer.invoke('proxy:test', input) as Promise<ProxyTestResult>,
+  resolveMailProxy: (input: {
+    vlessEnabled: boolean
+    subscriptionUrl: string
+    localEnabled: boolean
+    localHost: string
+    localPort: number
+  }) => ipcRenderer.invoke('proxy:resolveMail', input) as Promise<MailProxyResolve>,
+  vlessStatus: () => ipcRenderer.invoke('proxy:vlessStatus') as Promise<MailProxyResolve>,
+  consoleEnsureSeed: () =>
+    ipcRenderer.invoke('console:ensureSeed') as Promise<{ comments: number; names: number; seeded: boolean }>,
+  consoleCopyStats: () => ipcRenderer.invoke('console:copyStats') as Promise<{
+    locales: string[]
+    labels: Record<string, string>
+    byLocale: Record<string, { comments: number; names: number; namesFree: number }>
+  }>,
+  consoleListComments: (locale?: string) =>
+    ipcRenderer.invoke('console:listComments', locale) as Promise<
+      Array<{ id: string; locale: string; body: string; enabled: number; use_count: number; created_at: string }>
+    >,
+  consoleListNames: (input?: { locale?: string; onlyFree?: boolean }) =>
+    ipcRenderer.invoke('console:listNames', input) as Promise<
+      Array<{
+        id: string
+        locale: string
+        name: string
+        normalized: string
+        used_by_account_id: string | null
+        created_at: string
+      }>
+    >,
+  consoleAddComment: (input: { locale: string; body: string }) =>
+    ipcRenderer.invoke('console:addComment', input) as Promise<{ ok: boolean; id?: string; error?: string }>,
+  consoleAddName: (input: { locale: string; name: string }) =>
+    ipcRenderer.invoke('console:addName', input) as Promise<{ ok: boolean; id?: string; error?: string }>,
+  consoleLogs: (limit?: number) =>
+    ipcRenderer.invoke('console:logs', limit) as Promise<
+      Array<{
+        id: number
+        ts: string
+        level: string
+        account_email: string | null
+        listing_id: string | null
+        action: string
+        message: string
+      }>
+    >,
+  consoleClearLogs: () => ipcRenderer.invoke('console:clearLogs') as Promise<{ ok: boolean }>,
+  consoleCharacterStats: () =>
+    ipcRenderer.invoke('console:characterStats') as Promise<{
+      characters: number
+      pending: number
+      engaged: number
+      skipped: number
+    }>,
+  consolePickLocale: (existing: Array<string | undefined>) =>
+    ipcRenderer.invoke('console:pickLocale', existing) as Promise<string>,
+  consoleRenameProfile: (input: {
+    accountId: string
+    email: string
+    sessionToken: string
+    proxyUrl?: string
+    locale: string
+  }) =>
+    ipcRenderer.invoke('console:renameProfile', input) as Promise<{
+      ok: boolean
+      error?: string
+      displayName?: string
+    }>,
+  consoleDiscover: (input: {
+    sessionToken: string
+    proxyUrl?: string
+    accountIds: string[]
+    pages?: number
+    limit?: number
+  }) =>
+    ipcRenderer.invoke('console:discover', input) as Promise<{
+      ok: boolean
+      error?: string
+      pages: number
+      items: number
+      inserted: number
+      pendingCreated: number
+    }>,
+  consoleEngageStep: (input: {
+    accounts: Array<{ id: string; email: string; sessionToken: string; locale?: string }>
+    proxyUrl?: string
+    rateMin?: number
+    rateMax?: number
+  }) =>
+    ipcRenderer.invoke('console:engageStep', input) as Promise<{
+      ok: boolean
+      done?: boolean
+      action?: string
+      rateLimited?: boolean
+      accountEmail?: string
+      listingId?: string
+      title?: string
+      message?: string
+      error?: string
+      engageRate?: number
+    }>,
+  consoleLog: (input: {
+    level: 'info' | 'warn' | 'error'
+    action: string
+    message: string
+    accountEmail?: string
+    listingId?: string
+  }) => ipcRenderer.invoke('console:log', input) as Promise<{ ok: boolean }>,
+
+  createCharConfig: () =>
+    ipcRenderer.invoke('createChar:config') as Promise<{
+      teamoApiBase: string
+      teamoModel: string
+      hasApiKey: boolean
+      hasAdminToken: boolean
+      adminEmailLocal: string
+      adminAccountId: string
+    }>,
+  createCharSaveConfig: (input: {
+    teamoApiBase?: string
+    teamoApiKey?: string
+    teamoModel?: string
+    adminSessionToken?: string
+    adminEmailLocal?: string
+    adminAccountId?: string
+  }) =>
+    ipcRenderer.invoke('createChar:saveConfig', input) as Promise<{
+      teamoApiBase: string
+      teamoModel: string
+      hasApiKey: boolean
+      hasAdminToken: boolean
+      adminEmailLocal: string
+      adminAccountId: string
+    }>,
+  createCharAnalyze: (input: {
+    imageBase64: string
+    mimeType?: string
+    proxyUrl?: string
+    userHint?: string
+  }) =>
+    ipcRenderer.invoke('createChar:analyze', input) as Promise<{
+      ok: boolean
+      error?: string
+      payload?: Record<string, unknown>
+      portraitPrompt?: string
+      model?: string
+      rawPreview?: string
+    }>,
+  createCharWaitPortrait: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+    jobId?: string
+    forceRestart?: boolean
+  }) =>
+    ipcRenderer.invoke('createChar:waitPortrait', input) as Promise<{
+      ok: boolean
+      error?: string
+      cdnUrl?: string
+      jobId?: string
+      imageDataUrl?: string
+      jobStatus?: string
+      assetId?: string
+    }>,
+  createCharRefreshPortrait: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+  }) =>
+    ipcRenderer.invoke('createChar:refreshPortrait', input) as Promise<{
+      ok: boolean
+      error?: string
+      cdnUrl?: string
+      assetId?: string
+    }>,
+  createCharRefreshVideo: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+  }) =>
+    ipcRenderer.invoke('createChar:refreshVideo', input) as Promise<{
+      ok: boolean
+      error?: string
+      videoAssetId?: string
+      cdnUrl?: string
+    }>,
+  createCharCreate: (input: {
+    sessionToken?: string
+    proxyUrl?: string
+    body: Record<string, unknown>
+    waitPortrait?: boolean
+  }) =>
+    ipcRenderer.invoke('createChar:create', input) as Promise<{
+      ok: boolean
+      error?: string
+      status?: number
+      data?: Record<string, unknown>
+      portrait?: { cdnUrl?: string; jobId?: string; imageDataUrl?: string; assetId?: string }
+      createdAs?: string
+    }>,
+  createCharMotionVideo: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+    prompt?: string
+    inputAssetId?: string
+    mode?: 'companion' | 'direct'
+  }) =>
+    ipcRenderer.invoke('createChar:motionVideo', input) as Promise<{
+      ok: boolean
+      error?: string
+      jobId?: string
+      inputAssetId?: string
+      outputAssetId?: string
+      cdnUrl?: string
+      note?: string
+      labProjectId?: string
+    }>,
+  createCharSetPreviewPublish: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+    coverAssetId: string
+    videoAssetId?: string
+    title?: string
+    description?: string
+    publish?: boolean
+    listingId?: string
+  }) =>
+    ipcRenderer.invoke('createChar:setPreviewPublish', input) as Promise<{
+      ok: boolean
+      error?: string
+      listingId?: string
+      draftOk?: boolean
+      videoAttachOk?: boolean
+      publishOk?: boolean
+      data?: Record<string, unknown>
+    }>,
+  createCharGenerateMotionOnly: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+    portraitCdnUrl?: string
+    imageBase64?: string
+    mimeType?: string
+    coverAssetId?: string
+    characterHint?: string
+    appearanceHint?: string
+  }) =>
+    ipcRenderer.invoke('createChar:generateMotionOnly', input) as Promise<{
+      ok: boolean
+      error?: string
+      motionPrompt?: string
+      coverAssetId?: string
+      videoAssetId?: string
+      cdnUrl?: string
+      labProjectId?: string
+    }>,
+  createCharAutoVideoPublish: (input: {
+    characterId: string
+    sessionToken?: string
+    proxyUrl?: string
+    portraitCdnUrl?: string
+    imageBase64?: string
+    mimeType?: string
+    coverAssetId?: string
+    characterHint?: string
+    appearanceHint?: string
+    payload?: Record<string, unknown>
+    motionPromptOverride?: string
+  }) =>
+    ipcRenderer.invoke('createChar:autoVideoPublish', input) as Promise<{
+      ok: boolean
+      error?: string
+      motionPrompt?: string
+      coverAssetId?: string
+      videoAssetId?: string
+      cdnUrl?: string
+      listingId?: string
+      labProjectId?: string
+      publishOk?: boolean
+    }>,
+  createCharFullAutoPublish: (input: {
+    imageBase64: string
+    mimeType?: string
+    proxyUrl?: string
+    sessionToken?: string
+    userHint?: string
+    clientSlot?: 1 | 2 | 3
+  }) =>
+    ipcRenderer.invoke('createChar:fullAutoPublish', input) as Promise<{
+      ok: boolean
+      error?: string
+      characterId?: string
+      payload?: Record<string, unknown>
+      portraitPrompt?: string
+      motionPrompt?: string
+      coverAssetId?: string
+      videoAssetId?: string
+      videoCdnUrl?: string
+      listingId?: string
+      portraitCdnUrl?: string
+    }>,
+  onCreateCharProgress: (
+    cb: (p: {
+      stage: string
+      clientSlot?: 1 | 2 | 3
+      characterId?: string
+      portraitCdnUrl?: string
+      coverAssetId?: string
+      payload?: Record<string, unknown>
+      portraitPrompt?: string
+      motionPrompt?: string
+      videoAssetId?: string
+      videoCdnUrl?: string
+      listingId?: string
+    }) => void,
+  ) => {
+    const handler = (
+      _e: unknown,
+      p: {
+        stage: string
+        clientSlot?: 1 | 2 | 3
+        characterId?: string
+        portraitCdnUrl?: string
+        coverAssetId?: string
+        payload?: Record<string, unknown>
+        portraitPrompt?: string
+        motionPrompt?: string
+        videoAssetId?: string
+        videoCdnUrl?: string
+        listingId?: string
+      },
+    ) => cb(p)
+    ipcRenderer.on('createChar:progress', handler)
+    return () => {
+      ipcRenderer.removeListener('createChar:progress', handler)
+    }
+  },
+  createCharCacheMedia: (input: {
+    cdnUrl: string
+    proxyUrl?: string
+    displayName?: string
+    kind?: 'portrait' | 'video' | 'media'
+  }) =>
+    ipcRenderer.invoke('createChar:cacheMedia', input) as Promise<{
+      ok: boolean
+      error?: string
+      fileName?: string
+      localPath?: string
+      cacheUrl?: string
+      bytes?: number
+      twitterPath?: string
+    }>,
+})
