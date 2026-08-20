@@ -175,6 +175,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const portraitRestoreTried = useRef<Set<string>>(new Set())
   const videoCacheTried = useRef<Set<string>>(new Set())
   const portraitSaveTried = useRef<Set<string>>(new Set())
+  /** 永久失败的 CDN（404/410 等）：不再轮询下载，避免 toast 刷屏卡死操作感 */
+  const portraitCdnDead = useRef<Set<string>>(new Set())
+  const portraitDeadToastOnce = useRef<Set<string>>(new Set())
   /** 槽 → 当前流水线 epoch（贴新图 / 全自动开始时更新） */
   const slotRunEpoch = useRef<Record<CreateCharSlotId, number>>({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 })
 
@@ -355,6 +358,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     ) => {
       const slotId = slot ?? useCreateCharStore.getState().activeSlot
       if (!cdnOrUrl?.startsWith('http')) return false
+      if (portraitCdnDead.current.has(cdnOrUrl)) return false
       const st0 = useCreateCharStore.getState().slots[slotId]
       const charAtStart = (expectedCharacterId?.trim() || st0.createdCharacterId || '').trim()
       const epochAtStart = expectedEpoch ?? st0.draftEpoch
@@ -420,18 +424,69 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             pushStep(slotId, 'ok', '立绘预览已缓存')
             return false
           }
-        } else {
-          portraitSaveTried.current.delete(cacheKey)
-          setToast(res.error || `槽${slotId}：立绘缓存失败`, 6000)
+        }
+
+        const errText = res.error || `槽${slotId}：立绘缓存失败`
+        const permanent =
+          /CDN HTTP (404|410|403)/i.test(errText) || /HTTP (404|410|403)/i.test(errText)
+        if (permanent) {
+          // 过期 CDN：标记死链，尝试从 Lovemi 拉新地址；不要 delete tried（否则 3s 轮询狂刷）
+          portraitCdnDead.current.add(cdnOrUrl)
+          if (!portraitDeadToastOnce.current.has(cdnOrUrl)) {
+            portraitDeadToastOnce.current.add(cdnOrUrl)
+            setToast(`槽${slotId}：立绘 CDN 已失效（${errText}），正在尝试重新拉取…`, 5000)
+          }
+          if (window.lovemi?.createCharRefreshPortrait) {
+            try {
+              const refreshed = await window.lovemi.createCharRefreshPortrait({
+                characterId: charAtStart,
+                proxyUrl: outbound.proxyUrl,
+              })
+              const fresh = refreshed.cdnUrl?.startsWith('http') ? refreshed.cdnUrl : ''
+              if (refreshed.ok && fresh && fresh !== cdnOrUrl && !portraitCdnDead.current.has(fresh)) {
+                applyPortraitUpdate(
+                  slotId,
+                  charAtStart,
+                  { portraitUrl: fresh, portraitCdnUrl: fresh },
+                  epochAtStart,
+                )
+                portraitSaveTried.current.delete(cacheKey)
+                return ensurePortraitDownloaded(
+                  fresh,
+                  slotId,
+                  displayNameOverride,
+                  charAtStart,
+                  epochAtStart,
+                  expectedAssetId,
+                  expectedRunId,
+                )
+              }
+            } catch {
+              /* ignore refresh errors */
+            }
+          }
+          // 清掉死链，避免对比区一直裂图 / 轮询死磕
+          const latest = useCreateCharStore.getState().slots[slotId]
+          if (latest.portraitCdnUrl === cdnOrUrl || latest.portraitUrl === cdnOrUrl) {
+            patchSlot(slotId, {
+              portraitUrl: latest.portraitUrl === cdnOrUrl ? null : latest.portraitUrl,
+              portraitCdnUrl: latest.portraitCdnUrl === cdnOrUrl ? null : latest.portraitCdnUrl,
+            })
+          }
           return false
         }
+
+        // 临时失败（网络等）：允许稍后重试
+        portraitSaveTried.current.delete(cacheKey)
+        setToast(errText, 6000)
+        return false
       } catch (err) {
         portraitSaveTried.current.delete(cacheKey)
         setToast(err instanceof Error ? err.message : '立绘缓存异常', 6000)
         return false
       }
     },
-    [setToast, characterDisplayName, pushStep, applyPortraitUpdate],
+    [setToast, characterDisplayName, pushStep, applyPortraitUpdate, patchSlot],
   )
 
   const waitMaxSec =
@@ -517,6 +572,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           (st.portraitUrl?.startsWith('http') && st.portraitUrl) ||
           null
         if (!cdn) continue
+        if (portraitCdnDead.current.has(cdn)) continue
         if (st.portraitUrl?.startsWith('lovemi-cache://') || st.portraitUrl?.startsWith('data:')) continue
         if (!st.createdCharacterId || !portraitMatchesSlot(st)) continue
         void ensurePortraitDownloaded(
@@ -654,6 +710,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       for (const key of [...videoCacheTried.current]) {
         if (key.startsWith(`${slotId}:`)) videoCacheTried.current.delete(key)
       }
+      portraitDeadToastOnce.current.clear()
       const epoch = beginSlotRun(slotId, true)
       patchSlot(slotId, {
         imageBase64: base64,
@@ -1138,7 +1195,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(outbound.error || '无代理')
       return
     }
-    if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+    if (!slotStillMatches(slot, preflight.draftEpoch, preflight.createdCharacterId)) {
       setToast(`槽${slot}：准备期间角色已变更，本次视频任务已取消`)
       return
     }
@@ -1148,7 +1205,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       currentBeforeQueue.imageBase64 !== preflightImage ||
       !currentBeforeQueue.imageBase64
     ) {
-      setToast(`槽${slot}：准备期间参考图已更换，请重新点全自动`)
+      setToast(`槽${slot}：准备期间参考图已更换，请重新点生成视频`)
       return
     }
     const snap = { ...currentBeforeQueue }
@@ -1415,6 +1472,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast('请先填写并保存管理员 Bearer')
       return
     }
+    const runEpoch = beginSlotRun(slot, true)
     const runId = crypto.randomUUID()
     patchSlot(slot, {
       busy: 'auto',
@@ -1924,9 +1982,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                     (portraitCdnUrl?.startsWith('http') && portraitCdnUrl) ||
                     (showPortraitUrl.startsWith('http') && showPortraitUrl) ||
                     null
-                  if (!cdn) return
+                  if (!cdn || portraitCdnDead.current.has(cdn)) return
                   const retryKey = `${activeSlot}:${draftEpoch}:${createdCharacterId}:${cdn}`
-                  portraitSaveTried.current.delete(retryKey)
+                  // 裂图时只重试一次；404 会进 dead 集合，不会无限刷
+                  if (portraitSaveTried.current.has(retryKey)) return
                   void ensurePortraitDownloaded(
                     cdn,
                     activeSlot,
