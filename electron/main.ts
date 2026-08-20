@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, protocol, net, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, net, session, type WebContents } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { probeAccount, probeAccountsBatch, testProxyConnectivity, type ProbeInput } from './mailProbe'
 import { registerLovemiAccount, type RegisterInput } from './lovemiRegister'
 import { loginLovemi, fetchLovemiMe, resetLovemiPassword, type LoginInput, type ResetPasswordInput } from './lovemiAuth'
@@ -30,6 +30,7 @@ import {
   createCharConfigPublic,
   loadCreateCharSecrets,
   saveCreateCharSecrets,
+  type CreateCharSecrets,
 } from './createCharSecrets'
 import {
   analyzeReferenceImage,
@@ -50,6 +51,10 @@ const isDev = !app.isPackaged
 const APP_DATA = path.join(app.getPath('appData'), 'lovemi-auto')
 app.setPath('userData', APP_DATA)
 app.setName('Lovemi Auto')
+// macOS + Electron 43 在部分机器上会频繁触发 GPU 进程退出（表现为窗口闪退/闪烁重启）。
+// 关闭硬件加速可显著提升稳定性，优先保证不闪退。
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('disable-gpu')
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -86,6 +91,30 @@ function patchDevDockName() {
 }
 
 let mainWindow: BrowserWindow | null = null
+let recoveringRenderer = false
+
+function recoverMainWindow(reason: string) {
+  if (recoveringRenderer) return
+  recoveringRenderer = true
+  appendConsoleLog({
+    level: 'warn',
+    action: 'create_char',
+    message: `窗口渲染进程异常，自动恢复 · ${reason}`.slice(0, 220),
+  })
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+  } catch {
+    /* ignore */
+  }
+  mainWindow = null
+  setTimeout(() => {
+    try {
+      createWindow()
+    } finally {
+      recoveringRenderer = false
+    }
+  }, 350)
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -113,6 +142,12 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    recoverMainWindow(`render-process-gone:${details.reason}`)
+  })
+  mainWindow.webContents.on('unresponsive', () => {
+    recoverMainWindow('unresponsive')
   })
 }
 
@@ -142,7 +177,30 @@ if (!gotLock) {
         }
         const filePath = path.join(APP_DATA, 'media-cache', fileName)
         if (!fs.existsSync(filePath)) return new Response('not found', { status: 404 })
-        return net.fetch(pathToFileURL(filePath).href)
+        const ext = path.extname(fileName).toLowerCase()
+        const mime =
+          ext === '.mp4'
+            ? 'video/mp4'
+            : ext === '.webm'
+              ? 'video/webm'
+              : ext === '.mov'
+                ? 'video/quicktime'
+                : ext === '.jpg' || ext === '.jpeg'
+                  ? 'image/jpeg'
+                  : ext === '.png'
+                    ? 'image/png'
+                    : ext === '.webp'
+                      ? 'image/webp'
+                      : 'application/octet-stream'
+        const data = await fs.promises.readFile(filePath)
+        return new Response(data, {
+          status: 200,
+          headers: {
+            'Content-Type': mime,
+            'Content-Length': String(data.length),
+            'Accept-Ranges': 'bytes',
+          },
+        })
       } catch (err) {
         return new Response(err instanceof Error ? err.message : 'error', { status: 500 })
       }
@@ -413,12 +471,47 @@ ipcMain.handle(
       adminSessionToken?: string
       adminEmailLocal?: string
       adminAccountId?: string
+      downloadsDir?: string
     },
   ) => {
-    const next = saveCreateCharSecrets(input || {})
+    const patch = { ...(input || {}) } as Partial<CreateCharSecrets>
+    if (typeof patch.adminSessionToken === 'string') {
+      // 允许粘贴 "Bearer xxx"
+      patch.adminSessionToken = patch.adminSessionToken.replace(/^Bearer\s+/i, '').trim()
+    }
+    if (typeof patch.downloadsDir === 'string') {
+      patch.downloadsDir = patch.downloadsDir.trim()
+    }
+    saveCreateCharSecrets(patch)
     return createCharConfigPublic()
   },
 )
+
+ipcMain.handle('createChar:pickDownloadsDir', async () => {
+  const secrets = loadCreateCharSecrets()
+  const fallback = app.getPath('downloads')
+  const current = (secrets.downloadsDir || '').trim() || fallback
+  const opts: Electron.OpenDialogOptions = {
+    title: '选择推特资源保存位置',
+    message: '将在所选文件夹下创建「推特资源」子目录存放立绘/视频',
+    defaultPath: current,
+    properties: ['openDirectory', 'createDirectory'],
+  }
+  const res = mainWindow
+    ? await dialog.showOpenDialog(mainWindow, opts)
+    : await dialog.showOpenDialog(opts)
+  if (res.canceled || !res.filePaths[0]) {
+    return { ok: false as const, ...createCharConfigPublic(), defaultDownloadsDir: fallback }
+  }
+  saveCreateCharSecrets({ downloadsDir: res.filePaths[0] })
+  return { ok: true as const, ...createCharConfigPublic(), defaultDownloadsDir: fallback }
+})
+
+function resolveTwitterDownloadsParent() {
+  const custom = (loadCreateCharSecrets().downloadsDir || '').trim()
+  if (custom && fs.existsSync(custom)) return custom
+  return app.getPath('downloads')
+}
 
 ipcMain.handle(
   'createChar:analyze',
@@ -689,43 +782,162 @@ ipcMain.handle(
   },
 )
 
-ipcMain.handle(
-  'createChar:fullAutoPublish',
-  async (
-    _e,
-    input: {
-      imageBase64: string
-      mimeType?: string
-      proxyUrl?: string
-      sessionToken?: string
-      userHint?: string
-      clientSlot?: 1 | 2 | 3
-    },
-  ) => {
-    if (!input.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）' }
-    if (!input.imageBase64) return { ok: false, error: '请先粘贴参考图' }
-    const secrets = loadCreateCharSecrets()
-    const token = secrets.adminSessionToken || input.sessionToken || ''
-    if (!token) return { ok: false, error: '请配置管理员 Bearer' }
-    return fullAutoToPublish({
-      imageBase64: input.imageBase64,
-      mimeType: input.mimeType,
-      proxyUrl: input.proxyUrl,
-      sessionToken: token,
-      userHint: input.userHint,
-      onProgress: (p) => {
-        try {
-          _e.sender.send('createChar:progress', {
-            ...p,
-            clientSlot: input.clientSlot,
-          })
-        } catch {
-          /* window closed */
+type FullAutoQueueInput = {
+  imageBase64: string
+  mimeType?: string
+  proxyUrl?: string
+  sessionToken?: string
+  userHint?: string
+  clientSlot?: 1 | 2 | 3 | 4 | 5
+  clientRunEpoch?: number
+  clientRunId: string
+}
+
+type FullAutoQueueItem = {
+  input: FullAutoQueueInput
+  sender: WebContents
+  resolve: (value: Record<string, unknown>) => void
+}
+
+const fullAutoQueue: FullAutoQueueItem[] = []
+const cancelledFullAutoRuns = new Set<string>()
+let fullAutoQueueRunning = false
+let activeFullAutoRunId = ''
+
+function sendFullAutoQueueProgress(
+  item: FullAutoQueueItem,
+  stage: 'queued' | 'running' | 'cancelled' | 'failed',
+  queuePosition = 0,
+  runStartedAt?: number,
+  error?: string,
+) {
+  if (item.sender.isDestroyed()) return
+  item.sender.send('createChar:progress', {
+    stage,
+    queuePosition,
+    runId: item.input.clientRunId,
+    runStartedAt,
+    clientSlot: item.input.clientSlot,
+    clientRunEpoch: item.input.clientRunEpoch,
+    error,
+  })
+}
+
+function refreshFullAutoQueuePositions() {
+  fullAutoQueue.forEach((item, index) => sendFullAutoQueueProgress(item, 'queued', index + 1))
+}
+
+async function drainFullAutoQueue() {
+  if (fullAutoQueueRunning) return
+  fullAutoQueueRunning = true
+  try {
+    while (fullAutoQueue.length) {
+      const item = fullAutoQueue.shift()!
+      refreshFullAutoQueuePositions()
+      const { input } = item
+      if (cancelledFullAutoRuns.delete(input.clientRunId)) {
+        sendFullAutoQueueProgress(item, 'cancelled')
+        item.resolve({ ok: false, cancelled: true, runId: input.clientRunId, error: '排队任务已取消' })
+        continue
+      }
+      if (!input.proxyUrl) {
+        item.resolve({ ok: false, runId: input.clientRunId, error: '未配置出站代理（禁止直连）' })
+        continue
+      }
+      if (!input.imageBase64) {
+        item.resolve({ ok: false, runId: input.clientRunId, error: '请先粘贴参考图' })
+        continue
+      }
+      const secrets = loadCreateCharSecrets()
+      const token = secrets.adminSessionToken || input.sessionToken || ''
+      if (!token) {
+        item.resolve({ ok: false, runId: input.clientRunId, error: '请配置管理员 Bearer' })
+        continue
+      }
+      const runStartedAt = Date.now()
+      activeFullAutoRunId = input.clientRunId
+      sendFullAutoQueueProgress(item, 'running', 0, runStartedAt)
+      try {
+        const result = await fullAutoToPublish({
+          imageBase64: input.imageBase64,
+          mimeType: input.mimeType,
+          proxyUrl: input.proxyUrl,
+          sessionToken: token,
+          userHint: input.userHint,
+          runId: input.clientRunId,
+          runStartedAt,
+          isCancelled: () => cancelledFullAutoRuns.has(input.clientRunId),
+          onProgress: (p) => {
+            if (item.sender.isDestroyed()) return
+            item.sender.send('createChar:progress', {
+              ...p,
+              runId: input.clientRunId,
+              runStartedAt,
+              clientSlot: input.clientSlot,
+              clientRunEpoch: input.clientRunEpoch,
+            })
+          },
+        })
+        if (!result.ok && !(result as { cancelled?: boolean }).cancelled) {
+          sendFullAutoQueueProgress(
+            item,
+            'failed',
+            0,
+            runStartedAt,
+            typeof result.error === 'string' ? result.error : '全自动失败',
+          )
         }
-      },
+        item.resolve({ ...result, runId: input.clientRunId, runStartedAt })
+      } catch (error) {
+        item.resolve({
+          ok: false,
+          runId: input.clientRunId,
+          runStartedAt,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        cancelledFullAutoRuns.delete(input.clientRunId)
+        if (activeFullAutoRunId === input.clientRunId) activeFullAutoRunId = ''
+      }
+    }
+  } finally {
+    fullAutoQueueRunning = false
+  }
+}
+
+ipcMain.handle('createChar:fullAutoPublish', async (_e, input: FullAutoQueueInput) => {
+  if (!input.clientRunId) return { ok: false, error: '缺少全自动 runId' }
+  return new Promise<Record<string, unknown>>((resolve) => {
+    const item: FullAutoQueueItem = { input, sender: _e.sender, resolve }
+    fullAutoQueue.push(item)
+    sendFullAutoQueueProgress(item, 'queued', fullAutoQueue.length)
+    refreshFullAutoQueuePositions()
+    void drainFullAutoQueue()
+  })
+})
+
+ipcMain.handle('createChar:cancelFullAuto', async (_e, input: { runId?: string }) => {
+  const runId = input.runId?.trim()
+  if (!runId) return { ok: false, error: '缺少 runId' }
+  cancelledFullAutoRuns.add(runId)
+  if (activeFullAutoRunId === runId) {
+    appendConsoleLog({
+      level: 'warn',
+      action: 'create_char',
+      message: `已请求取消运行中的全自动任务 · ${runId.slice(0, 8)}`,
     })
-  },
-)
+  }
+  for (let i = fullAutoQueue.length - 1; i >= 0; i--) {
+    const item = fullAutoQueue[i]
+    if (item.input.clientRunId !== runId) continue
+    fullAutoQueue.splice(i, 1)
+    sendFullAutoQueueProgress(item, 'cancelled')
+    item.resolve({ ok: false, cancelled: true, runId, error: '排队任务已取消' })
+    cancelledFullAutoRuns.delete(runId)
+  }
+  refreshFullAutoQueuePositions()
+  return { ok: true }
+})
 
 ipcMain.handle(
   'createChar:refreshVideo',
@@ -759,6 +971,9 @@ ipcMain.handle(
       proxyUrl?: string
       displayName?: string
       kind?: 'portrait' | 'video' | 'media'
+      characterId?: string
+      assetId?: string
+      runId?: string
     },
   ) => {
     if (!input.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）' }
@@ -768,8 +983,11 @@ ipcMain.handle(
       proxyUrl: input.proxyUrl,
       appData: APP_DATA,
       saveDisplayName: input.displayName?.trim() || undefined,
-      downloadsPath: app.getPath('downloads'),
+      downloadsPath: resolveTwitterDownloadsParent(),
       kind: input.kind || 'media',
+      characterId: input.characterId,
+      assetId: input.assetId,
+      runId: input.runId,
     })
   },
 )

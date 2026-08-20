@@ -89,6 +89,8 @@ Schema (required keys):
   "appearance_tags": [
     "发型:必须超细（刘海形状/遮眼侧/层次/蓬松度/碎发/长度落点/有无扎发；禁止擅自加丸子头或改发型）",
     "发质:卷直纹理光泽蓬松凌乱度",
+    "五官:脸型、眉形、眼型、鼻唇、面部辨识点",
+    "妆容:眼妆、腮红、唇色与质感",
     "体型:...",
     "胸型:...",
     "臀型:...",
@@ -155,6 +157,7 @@ So appearance_tags MUST lock the reference with concrete Chinese short labels:
   - NEVER invent 高跟鞋 / sandals / boots if reference has no shoes (e.g. only lace tights covering feet). Match 袜 vs 鞋 exactly.
   - If no feet visible at all, 脚:画面未出现脚.
 - 服装 / 配饰 / 姿势 / 背景 / 表情 / 气质 / 脚 are MANDATORY fields (脚 always present as above).
+- 五官 / 妆容 are MANDATORY and must describe visible, reference-specific details rather than generic beauty words.
 - CLOTHING EXPOSURE: keep the reference outfit identity (colors/style/accessories) but make it mildly MORE revealing / sexy than the photo — deeper cleavage, higher slit, shorter hem, thinner straps, more shoulder/thigh/waist skin, tighter fit, sheer side panels OK. NEVER show nipples / areola / 露点 / fully bare breasts / transparent fabric over nipples / pubic exposure. Add tag 露肤度:….
 
 REGION RULES:
@@ -188,6 +191,66 @@ function ensureTagged(list: string[], prefix: string, fallback: string) {
   if (!list.some((t) => t.startsWith(prefix))) list.push(`${prefix}${fallback}`)
 }
 
+function analyzeDetailIssues(payload: Record<string, unknown>, portraitPrompt: string): string[] {
+  const tags = Array.isArray(payload.appearance_tags)
+    ? (payload.appearance_tags as unknown[]).map(String)
+    : []
+  const issues: string[] = []
+  const required: Array<[string, number]> = [
+    ['发型:', 32],
+    ['发质:', 18],
+    ['五官:', 24],
+    ['妆容:', 18],
+    ['朝向:', 18],
+    ['惯用手:', 14],
+    ['服装:', 38],
+    ['露肤度:', 16],
+    ['脚:', 18],
+    ['配饰:', 24],
+    ['姿势:', 28],
+    ['背景:', 20],
+    ['表情:', 20],
+    ['气质:', 16],
+  ]
+  for (const [prefix, minLength] of required) {
+    const hit = tags.find((tag) => tag.startsWith(prefix))
+    if (!hit) issues.push(`缺少 ${prefix}`)
+    else if (hit.length < minLength) issues.push(`${prefix}细节不足`)
+  }
+  const genericCount = tags.filter((tag) => /复刻参考图|与参考图一致|保持原样/.test(tag)).length
+  if (genericCount >= 3) issues.push('泛化描述过多，必须写出实际可见细节')
+  if (portraitPrompt.length < 280) issues.push('portrait_prompt 少于 280 字')
+  const detailedTags = tags.filter((tag) => tag.length >= 28).length
+  if (detailedTags < 7) issues.push('长细节标签不足 7 条')
+  return issues
+}
+
+function requiredPayloadIssues(payload: Record<string, unknown>): string[] {
+  const issues: string[] = []
+  if (typeof payload.display_name !== 'string' || !payload.display_name.trim()) issues.push('缺少 display_name')
+  if (typeof payload.age_statement !== 'string') issues.push('缺少 age_statement')
+  if (!['female', 'male', 'non_binary'].includes(String(payload.gender_expression || ''))) {
+    issues.push('gender_expression 无效')
+  }
+  for (const key of [
+    'ancestry_tags',
+    'appearance_tags',
+    'occupation_tags',
+    'personality_tags',
+    'relationship_tags',
+    'style_tags',
+    'supported_lab_apps',
+    'tag_items',
+    'tag_selections',
+  ]) {
+    if (!Array.isArray(payload[key])) issues.push(`缺少 ${key}`)
+  }
+  if (!payload.agent_prompt_settings || typeof payload.agent_prompt_settings !== 'object') {
+    issues.push('缺少 agent_prompt_settings')
+  }
+  return issues
+}
+
 function pushUnique(list: string[], items: string[]) {
   for (const item of items) {
     if (!list.some((x) => x === item || x.includes(item))) list.push(item)
@@ -207,9 +270,11 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
   ensureTagged(appearance, '惯用手:', '持物左右手与参考图一致，禁止左右互换')
   ensureTagged(appearance, '发型:', '复刻参考图刘海层次蓬松碎发，禁止擅自改扎发')
   ensureTagged(appearance, '发质:', '复刻参考图发丝纹理与凌乱蓬松度')
+  ensureTagged(appearance, '五官:', isEast ? '东亚脸型、眼型、鼻唇与面部辨识点按参考图锁定' : '脸型、眼型、鼻唇与面部辨识点按参考图锁定')
+  ensureTagged(appearance, '妆容:', '按参考图锁定眼妆、腮红、唇色与质感')
   ensureTagged(appearance, '背景:', '复刻参考图场景与景深')
-  ensureTagged(appearance, '表情:', isEast ? '超级娇羞可爱对视' : '复刻参考图表情')
-  ensureTagged(appearance, '气质:', isEast ? '萌妹超级娇羞粘人' : '完美复刻参考气质')
+  ensureTagged(appearance, '表情:', isEast ? '自然对视，轻微羞涩' : '复刻参考图表情')
+  ensureTagged(appearance, '气质:', isEast ? '生活化、亲密感、不过度摆拍' : '完美复刻参考气质')
   ensureTagged(appearance, '脚:', '复刻参考图足部：朝向/脚掌脚心/前景占比/袜或鞋；有脚必须写细，禁止缩小脚或乱加高跟鞋')
   pushUnique(appearance, [
     '禁止左右镜像',
@@ -263,44 +328,36 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
       '禁止高加索面孔',
       '禁止西方混血跑偏',
       '禁止欧美模特脸',
-      '萌系脸:水润大眼粉嫩软妹',
-      '可爱感:超级可爱想捏脸',
-      '氛围:娇羞粘人撒娇东亚感',
     ])
     ensureTagged(appearance, '人种:', '东亚中日韩')
     ensureTagged(appearance, '五官:', '东亚脸型，不是欧美深邃五官')
   }
+  if (
+    appearance.some((t) => t.startsWith('露肤度:')) &&
+    !appearance.some((t) => t.startsWith('体毛:') || t.includes('阴毛'))
+  ) {
+    // 避免默认“白虎”，在露肤场景加一条短约束，按参考图可见度复刻。
+    appearance.push('体毛:阴毛按参考图可见度自然保留，不做默认全剃')
+  }
   payload.appearance_tags = appearance
+
+  // 去重 + 统一长度上限：避免 prompt compiler 因重复/超长 tag 直接失败
+  const clamped = appearance.map((t) => clampAppearanceTagLen(t))
+  payload.appearance_tags = dedupeExactStrings(clamped)
 
   const personality = Array.isArray(payload.personality_tags)
     ? (payload.personality_tags as unknown[]).map(String)
     : []
-  if (isEast) {
-    pushUnique(personality, [
-      '超可爱',
-      '萌妹',
-      '软萌',
-      '甜美可人',
-      '超级娇羞',
-      '粘人',
-      '撒娇',
-      '依赖感强',
-      '可爱到犯规',
-      '娇滴滴',
-      '东亚萌妹感',
-    ])
-  }
+  // 不再自动堆叠“萌妹模板词”，保留用户原始人格描述，减少 AI 味。
   payload.personality_tags = personality
 
   const items = Array.isArray(payload.tag_items) ? (payload.tag_items as unknown[]).map(String) : []
-  if (isEast) {
-    pushUnique(items, ['萌', '可爱', '软萌', '娇羞', '粘人', '撒娇', '东亚', '中日韩'])
-  }
+  if (isEast) pushUnique(items, ['东亚', '中日韩'])
   payload.tag_items = items
 
   const style = Array.isArray(payload.style_tags) ? (payload.style_tags as unknown[]).map(String) : []
   pushUnique(style, ['写实', '写真'])
-  if (isEast) pushUnique(style, ['萌系', '东亚'])
+  if (isEast) pushUnique(style, ['东亚'])
   payload.style_tags = style
 
   if (isEast) {
@@ -310,8 +367,10 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
       : []
     pushUnique(ancestry, ['东亚裔'])
     // 去掉明显欧美跑偏标签
-    payload.ancestry_tags = ancestry.filter((t) => !/欧洲|欧美|高加索|western|caucasian|european/i.test(t))
-    if (!payload.ancestry_tags.length) payload.ancestry_tags = ['东亚裔']
+    const filteredAncestry = ancestry.filter(
+      (t) => !/欧洲|欧美|高加索|western|caucasian|european/i.test(t),
+    )
+    payload.ancestry_tags = filteredAncestry.length ? filteredAncestry : ['东亚裔']
   }
 
   const relPool = [
@@ -581,24 +640,35 @@ function nameRegionFromPayload(payload: Record<string, unknown>): 'zh' | 'jp' | 
   const ancestry = JSON.stringify(payload.ancestry_tags || [])
   const appearance = JSON.stringify(payload.appearance_tags || [])
   const blob = `${region} ${ancestry} ${appearance}`.toLowerCase()
+
+  // 东亚优先：appearance 里常有「禁止欧美五官」，不能因此抽英文名
+  const isEast =
+    region === 'east_asian' ||
+    /东亚|中日韩|east.?asian|chinese|korean|japanese|华裔|华语|萌妹|东亚锁|东亚脸型/.test(blob)
+
+  if (isEast) {
+    if (
+      /(^|[^日])韩系|韩国|korean|korea|首尔|韩风/.test(blob) &&
+      !/中国|华语|中式|chinese|汉服/.test(blob)
+    ) {
+      return 'kr'
+    }
+    if (
+      (/日本|和风|和服|京都|japanese|japan/.test(blob) || /日系萌|纯日系/.test(blob)) &&
+      !/中国|华语|中式|chinese|汉服/.test(blob)
+    ) {
+      return 'jp'
+    }
+    return 'zh'
+  }
+
   if (
     region === 'western' ||
-    /欧美|欧洲|western|caucasian|european|英伦|法式|德系/.test(blob)
+    (/欧美裔|欧洲裔|western|caucasian|european|英伦|法式|德系|白人模特/.test(blob) &&
+      !/禁止|勿|不是|禁|anti|no\s/i.test(blob))
   ) {
     return 'en'
   }
-  // 明确韩国风才用韩名
-  if (/(^|[^日])韩系|韩国|korean|korea|首尔|韩风/.test(blob) && !/中国|华语|中式|chinese/.test(blob)) {
-    return 'kr'
-  }
-  // 明确日本风才用日名（「日系」 alone 不够 — 东亚立绘常误标日系导致撞 千夏/陽葵）
-  if (
-    (/日本|和风|和服|京都|japanese|japan/.test(blob) || /日系萌|纯日系/.test(blob)) &&
-    !/中国|华语|中式|chinese|汉服/.test(blob)
-  ) {
-    return 'jp'
-  }
-  // 默认：中文甜名（词库最大，最不易撞）
   return 'zh'
 }
 
@@ -650,7 +720,7 @@ function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) 
   const hinted = extractNameFromUserHint(userHint)
   if (hinted) {
     payload.display_name = hinted.replace(/\d+/g, '').trim() || hinted
-    rememberName(payload.display_name)
+    rememberName(String(payload.display_name))
     return
   }
 
@@ -777,14 +847,15 @@ function reinforceEastAsianPortraitPrompt(payload: Record<string, unknown>, isEa
 }
 
 function injectLihuiTag(payload: Record<string, unknown>, portraitPrompt: string) {
-  const prompt = portraitPrompt.trim()
+  const prompt = sanitizePortraitPromptForLovemi(portraitPrompt)
   if (!prompt) return
   const tag = prompt.startsWith('立绘提示词:') ? prompt : `立绘提示词:${prompt}`
   const appearance = Array.isArray(payload.appearance_tags)
     ? (payload.appearance_tags as unknown[]).map(String).filter((t) => !t.startsWith('立绘提示词:'))
     : []
   appearance.push(tag)
-  payload.appearance_tags = appearance
+  const clamped = appearance.map((t) => clampAppearanceTagLen(t))
+  payload.appearance_tags = dedupeExactStrings(clamped)
 }
 
 function sanitizeCreateBody(body: Record<string, unknown>) {
@@ -913,7 +984,7 @@ export async function analyzeReferenceImage(input: {
     if (!content) content = messageContentToText(msg0.reasoning_content)
     if (!content && typeof data.output_text === 'string') content = data.output_text
 
-    const payload = extractJsonObject(content)
+    let payload = extractJsonObject(content)
     if (!payload || !Object.keys(payload).length) {
       const preview = content.slice(0, 600) || JSON.stringify(data).slice(0, 600)
       appendConsoleLog({
@@ -929,8 +1000,86 @@ export async function analyzeReferenceImage(input: {
       }
     }
 
-    const portraitPrompt =
+    let portraitPrompt =
       typeof payload.portrait_prompt === 'string' ? String(payload.portrait_prompt).trim() : ''
+
+    const detailIssues = [
+      ...requiredPayloadIssues(payload),
+      ...analyzeDetailIssues(payload, portraitPrompt),
+    ]
+    if (detailIssues.length) {
+      appendConsoleLog({
+        level: 'warn',
+        action: 'create_char',
+        message: `视觉细节不足，自动补充重试 1 次 · ${detailIssues.slice(0, 6).join('；')}`,
+      })
+      const retryBody: Record<string, unknown> = {
+        ...body,
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: ANALYZE_SYSTEM },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: [
+                  userText,
+                  '',
+                  'QUALITY RETRY: Previous result failed these checks:',
+                  ...detailIssues.map((issue) => `- ${issue}`),
+                  'Inspect the image again. Replace generic phrases such as 复刻参考图 with concrete visible colors, materials, shapes, layers, left/right positions and proportions. Return ONLY a complete JSON object.',
+                ].join('\n'),
+              },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+      }
+      try {
+        const retried = await postOnce(retryBody)
+        if (retried.res.ok) {
+          const retryChoices = Array.isArray(retried.data.choices)
+            ? (retried.data.choices as Array<Record<string, unknown>>)
+            : []
+          const retryMessage = (retryChoices[0]?.message || {}) as Record<string, unknown>
+          const retryContent =
+            messageContentToText(retryMessage.content) ||
+            messageContentToText(retryMessage.reasoning_content) ||
+            (typeof retried.data.output_text === 'string' ? retried.data.output_text : '')
+          const retryPayload = extractJsonObject(retryContent)
+          if (retryPayload && Object.keys(retryPayload).length) {
+            const retryPrompt =
+              typeof retryPayload.portrait_prompt === 'string'
+                ? String(retryPayload.portrait_prompt).trim()
+                : ''
+            const retrySchemaIssues = requiredPayloadIssues(retryPayload)
+            const retryIssues = [
+              ...retrySchemaIssues,
+              ...analyzeDetailIssues(retryPayload, retryPrompt),
+            ]
+            if (!retrySchemaIssues.length && retryIssues.length < detailIssues.length) {
+              payload = retryPayload
+              portraitPrompt = retryPrompt
+              appendConsoleLog({
+                level: 'info',
+                action: 'create_char',
+                message: `视觉细节补充完成 · 缺项 ${detailIssues.length} → ${retryIssues.length}`,
+              })
+            }
+          }
+        }
+      } catch (retryError) {
+        appendConsoleLog({
+          level: 'warn',
+          action: 'create_char',
+          message: `视觉细节补充重试失败，沿用首轮结果 · ${
+            retryError instanceof Error ? retryError.message : String(retryError)
+          }`,
+        })
+      }
+    }
+
     delete payload.portrait_prompt
     if (!payload.creation_source) payload.creation_source = 'blank'
     if (!payload.custom_parameter_access_level) payload.custom_parameter_access_level = 'basic'
@@ -948,6 +1097,13 @@ export async function analyzeReferenceImage(input: {
     if (portraitPrompt) injectLihuiTag(payload, portraitPrompt)
     reinforceEastAsianPortraitPrompt(payload, isEast)
     reinforceFootPortraitPrompt(payload)
+    // 把容易“模板化/广告词”的风格标签删掉，避免 AI 味
+    if (Array.isArray(payload.style_tags)) {
+      const style = payload.style_tags.map(String)
+      payload.style_tags = dedupeExactStrings(style).filter((t) => t !== '写真')
+    }
+    // 兜底：appearance_tags 过长/过多时 Lovemi prompt compiler 可能直接 failed。
+    pruneAppearanceTags(payload)
 
     appendConsoleLog({
       level: 'info',
@@ -1077,6 +1233,239 @@ function pickJobId(obj: unknown, depth = 0): string | undefined {
   return undefined
 }
 
+type JobRecord = { id: string; status?: string; at?: number; capability?: string }
+
+function jobRecordTime(rec: Record<string, unknown>): number {
+  for (const key of ['created_at', 'updated_at', 'started_at']) {
+    const v = rec[key]
+    if (typeof v === 'string') {
+      const t = Date.parse(v)
+      if (!Number.isNaN(t)) return t
+    }
+    if (typeof v === 'number' && v > 1_000_000_000_000) return v
+  }
+  return 0
+}
+
+/** 从 jobs 列表响应里收集 job 记录（用于挑最新、未失败的） */
+function collectJobRecords(obj: unknown, depth = 0, out: JobRecord[] = []): JobRecord[] {
+  if (!obj || depth > 6) return out
+  if (Array.isArray(obj)) {
+    for (const item of obj) collectJobRecords(item, depth + 1, out)
+    return out
+  }
+  if (typeof obj !== 'object') return out
+  const rec = obj as Record<string, unknown>
+  const id =
+    (typeof rec.id === 'string' && /^job_/.test(rec.id) ? rec.id : undefined) ||
+    (typeof rec.job_id === 'string' && /^job_/.test(rec.job_id) ? rec.job_id : undefined)
+  if (id) {
+    out.push({
+      id,
+      status: typeof rec.status === 'string' ? rec.status : undefined,
+      at: jobRecordTime(rec),
+      capability: typeof rec.capability_key === 'string' ? rec.capability_key : undefined,
+    })
+  }
+  for (const v of Object.values(rec)) collectJobRecords(v, depth + 1, out)
+  return out
+}
+
+function pickBestPortraitJobId(
+  data: Record<string, unknown>,
+  exclude = new Set<string>(),
+  minCreatedAt?: number,
+): string | undefined {
+  const records = collectJobRecords(data)
+  const imageJobs = records.filter(
+    (j) =>
+      !exclude.has(j.id) &&
+      (!minCreatedAt || !j.at || j.at >= minCreatedAt - 5000) &&
+      (!j.capability || /image\.(generate|edit)/i.test(j.capability)),
+  )
+  const pool = imageJobs.length
+    ? imageJobs
+    : records.filter(
+        (j) => !exclude.has(j.id) && (!minCreatedAt || !j.at || j.at >= minCreatedAt - 5000),
+      )
+  if (!pool.length) return undefined
+  pool.sort((a, b) => (b.at || 0) - (a.at || 0))
+  const active = pool.find((j) => j.status && !/fail|error|cancel/i.test(j.status))
+  return (active || pool[0])?.id
+}
+
+function extractJobError(data: Record<string, unknown>): string {
+  const parts: string[] = []
+  const push = (v: unknown) => {
+    if (typeof v === 'string' && v.trim()) parts.push(v.trim())
+  }
+  push(data.error)
+  if (data.error && typeof data.error === 'object') {
+    const err = data.error as Record<string, unknown>
+    push(err.message)
+    push(err.detail)
+    push(err.code)
+  }
+  push(data.message)
+  push(data.failure_reason)
+  push(data.reason)
+  const live = data.live as Record<string, unknown> | undefined
+  if (live) {
+    push(live.message)
+    push(live.error)
+    push(live.failure_reason)
+  }
+  const issues = data.issues
+  if (Array.isArray(issues) && issues[0] && typeof issues[0] === 'object') {
+    const i0 = issues[0] as Record<string, unknown>
+    push(i0.message)
+    push(i0.detail)
+  }
+  return [...new Set(parts)].join(' · ').slice(0, 240)
+}
+
+function extractJobErrorCode(data: Record<string, unknown>): string {
+  const last = data.last_error
+  if (last && typeof last === 'object') {
+    const code = (last as Record<string, unknown>).error_code
+    if (typeof code === 'string' && code.trim()) return code.trim()
+  }
+  const err = data.error
+  if (err && typeof err === 'object') {
+    const code = (err as Record<string, unknown>).code
+    if (typeof code === 'string' && code.trim()) return code.trim()
+  }
+  const live = data.live
+  if (live && typeof live === 'object') {
+    const code = (live as Record<string, unknown>).error_code
+    if (typeof code === 'string' && code.trim()) return code.trim()
+  }
+  return ''
+}
+
+function isJobStatusTerminal(status: string) {
+  return /fail|error|cancel|complete|completed|success|succeed|done|finished/i.test(status)
+}
+
+function isNonRetriablePortraitErrorCode(code: string) {
+  if (!code) return false
+  return /PROMPT_COMPILATION_FAILED|INVALID_PROMPT|CONTENT_POLICY|SAFETY|MODERATION/i.test(code)
+}
+
+function sanitizePortraitPromptForLovemi(input: string): string {
+  // Lovemi prompt compiler 对某些控制字符/反引号/换行比较敏感：尽量变成单行、可打印字符。
+  // 这里不做“语义删改”，仅做字符清洗与长度截断。
+  const rewritten = input
+    // 这些是“元评价”风格，容易让画面显得不真实：做等量替换（不新增段落，只替换短语）
+    .replace(/拒绝AI塑料感/g, '少磨皮')
+    .replace(/高级写真棚拍感与生活空间真实感兼具/g, '自然光影，像真实拍摄')
+    .replace(/写真棚拍感/g, '自然光影')
+    .replace(/比例真实/g, '比例自然')
+
+  return rewritten
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[`]/g, '')
+    .replace(/\r\n|\n|\r/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    // Lovemi prompt compiler 对单条 tag 长度可能有硬上限：先压到保守值
+    .slice(0, 850)
+}
+
+function dedupeExactStrings(list: string[]) {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const item of list) {
+    if (!item) continue
+    if (seen.has(item)) continue
+    seen.add(item)
+    out.push(item)
+  }
+  return out
+}
+
+// Lovemi prompt compiler 对“总长度/条目”很可能有硬限制。
+// 这里取更保守的上限，宁可少一点细节也先保证编译不失败。
+const MAX_LIHUI_TAG_LEN = 640
+const MAX_OTHER_APPEARANCE_TAG_LEN = 180
+function clampAppearanceTagLen(tag: string) {
+  if (!tag) return tag
+  if (tag.startsWith('立绘提示词:')) return tag.slice(0, MAX_LIHUI_TAG_LEN)
+  return tag.slice(0, MAX_OTHER_APPEARANCE_TAG_LEN)
+}
+
+function pruneAppearanceTags(payload: Record<string, unknown>) {
+  const appearance = Array.isArray(payload.appearance_tags)
+    ? (payload.appearance_tags as unknown[]).map(String)
+    : []
+  if (!appearance.length) return
+
+  const lihui = appearance.find((t) => t.startsWith('立绘提示词:'))
+  const requiredPrefixes = [
+    '发型:',
+    '发质:',
+    '五官:',
+    '妆容:',
+    '朝向:',
+    '惯用手:',
+    '服装:',
+    '露肤度:',
+    '脚:',
+    '配饰:',
+    '姿势:',
+    '背景:',
+    '表情:',
+    '气质:',
+    '体毛:',
+  ]
+  const lockRe = /(锁死|禁止)/i
+  const eastLockRe = /东亚锁|中日韩面孔|禁止欧美|禁止高加索|禁止西方混血/i
+  const keep = (t: string) => {
+    if (!t) return false
+    if (t.startsWith('人种:')) return true
+    if (t.startsWith('东亚锁:')) return true
+    if (t.startsWith('立绘提示词:')) return true
+    if (requiredPrefixes.some((p) => t.startsWith(p))) return true
+    if (lockRe.test(t) || eastLockRe.test(t)) return true
+    return false
+  }
+
+  const prunedOthers = appearance.filter((t) => t !== lihui && keep(t))
+
+  // 数量也做硬限制，避免“条目数”触发编译器上限。
+  const MAX_OTHERS = 14
+  const others = prunedOthers.slice(0, MAX_OTHERS)
+  const combined = lihui ? [clampAppearanceTagLen(lihui), ...others.map(clampAppearanceTagLen)] : []
+  payload.appearance_tags = dedupeExactStrings(combined)
+}
+
+/** 同时只允许一个角色在等生图，避免三槽并发把 Lovemi 打挂 */
+let portraitWaitGate: Promise<void> = Promise.resolve()
+let portraitWaitCount = 0
+
+async function withPortraitWaitSlot<T>(characterId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = portraitWaitGate
+  let release!: () => void
+  portraitWaitGate = new Promise((r) => {
+    release = r
+  })
+  await prev
+  portraitWaitCount += 1
+  if (portraitWaitCount > 1) {
+    appendConsoleLog({
+      level: 'info',
+      action: 'create_char',
+      message: `生图排队 · 前面还有 ${portraitWaitCount - 1} 个 · ${characterId.slice(0, 18)}`,
+    })
+  }
+  try {
+    return await fn()
+  } finally {
+    portraitWaitCount = Math.max(0, portraitWaitCount - 1)
+    release()
+  }
+}
+
 async function lovemiPostJson(input: {
   path: string
   sessionToken: string
@@ -1126,11 +1515,15 @@ async function discoverPortraitJobId(input: {
   characterId: string
   sessionToken: string
   proxyUrl: string
+  excludeJobIds?: string[]
+  minCreatedAt?: number
 }): Promise<string | undefined> {
+  const exclude = new Set((input.excludeJobIds || []).filter(Boolean))
   const paths = [
     `/v1/jobs?character_id=${encodeURIComponent(input.characterId)}`,
     `/v1/characters/${encodeURIComponent(input.characterId)}/jobs`,
   ]
+  let best: string | undefined
   for (const path of paths) {
     const res = await lovemiGetJson({
       path,
@@ -1138,10 +1531,10 @@ async function discoverPortraitJobId(input: {
       proxyUrl: input.proxyUrl,
     })
     if (!res.ok) continue
-    const hit = pickJobId(res.data)
-    if (hit) return hit
+    const hit = pickBestPortraitJobId(res.data, exclude, input.minCreatedAt)
+    if (hit) best = hit
   }
-  return undefined
+  return best
 }
 
 async function tryStartPortraitJob(input: {
@@ -1149,23 +1542,41 @@ async function tryStartPortraitJob(input: {
   sessionToken: string
   proxyUrl: string
 }): Promise<string | undefined> {
+  const threadId = `gen_${createHash('sha256')
+    .update(`${input.characterId}|${Date.now()}|${randomUUID()}`)
+    .digest('hex')
+    .slice(0, 32)}`
   const bodies: Record<string, unknown>[] = [
     {
-      capability_key: 'image.generate.v1',
-      job_type: 'image',
       public_model_key: 'image1_pro',
-      metadata: { character_id: input.characterId, source: 'character_creation' },
-      requested_options: {
+      capability_key: 'image.generate.v1',
+      metadata: {
+        character_id: input.characterId,
+        source: 'character_creation',
+        public_model_key: 'image1_pro',
+        product_model: 'Image1-pro',
         aspect_ratio: '9:16',
+        generation_thread_id: threadId,
+        prompt_enhancement: true,
+      },
+      requested_options: {
+        public_model_key: 'image1_pro',
+        model_label: 'Image1-pro',
+        aspect_ratio: '9:16',
+        aspect: 'portrait',
         width: 1088,
         height: 1920,
         prompt_enhancement: true,
       },
     },
     {
+      public_model_key: 'image1_pro',
       capability_key: 'image.generate.v1',
       character_id: input.characterId,
-      public_model_key: 'image1_pro',
+      metadata: {
+        character_id: input.characterId,
+        source: 'character_creation',
+      },
       requested_options: {
         aspect_ratio: '9:16',
         width: 1088,
@@ -1175,6 +1586,7 @@ async function tryStartPortraitJob(input: {
     },
   ]
   const paths = ['/v1/jobs', `/v1/characters/${encodeURIComponent(input.characterId)}/jobs`]
+  let lastErr = ''
   for (const path of paths) {
     for (const body of bodies) {
       const res = await lovemiPostJson({
@@ -1192,7 +1604,19 @@ async function tryStartPortraitJob(input: {
         })
         return jobId
       }
+      lastErr =
+        res.error ||
+        extractJobError(res.data) ||
+        (typeof res.data.message === 'string' ? res.data.message : '') ||
+        `HTTP ${res.status}`
     }
+  }
+  if (lastErr) {
+    appendConsoleLog({
+      level: 'warn',
+      action: 'create_char',
+      message: `补触发生图失败 · ${input.characterId.slice(0, 18)} · ${lastErr.slice(0, 160)}`,
+    })
   }
   return undefined
 }
@@ -1218,6 +1642,27 @@ export async function waitLovemiPortrait(input: {
   timeoutMs?: number
   /** 失败或刷新时强制再触发一次生图 job */
   forceRestart?: boolean
+  shouldCancel?: () => boolean
+}): Promise<{
+  ok: boolean
+  error?: string
+  cdnUrl?: string
+  jobId?: string
+  imageDataUrl?: string
+  jobStatus?: string
+  assetId?: string
+}> {
+  return withPortraitWaitSlot(input.characterId, () => waitLovemiPortraitLoop(input))
+}
+
+async function waitLovemiPortraitLoop(input: {
+  characterId: string
+  sessionToken: string
+  proxyUrl: string
+  jobId?: string
+  timeoutMs?: number
+  forceRestart?: boolean
+  shouldCancel?: () => boolean
 }): Promise<{
   ok: boolean
   error?: string
@@ -1232,11 +1677,14 @@ export async function waitLovemiPortrait(input: {
   let lastErr = ''
   let jobId = input.forceRestart ? undefined : input.jobId
   let triedStart = Boolean(input.forceRestart)
-  let didFailRestart = false
+  let failRestartCount = 0
+  const maxFailRestarts = 6
   let jobStatus = ''
   let lastLoggedJobLine = ''
+  const cancelled = () => input.shouldCancel?.() === true
 
   if (input.forceRestart) {
+    if (cancelled()) return { ok: false, error: '任务已取消' }
     appendConsoleLog({
       level: 'info',
       action: 'create_char',
@@ -1250,11 +1698,13 @@ export async function waitLovemiPortrait(input: {
   }
 
   while (Date.now() - started < timeoutMs) {
+    if (cancelled()) return { ok: false, error: '任务已取消', jobId, jobStatus }
     if (!jobId) {
       jobId = await discoverPortraitJobId({
         characterId: input.characterId,
         sessionToken: input.sessionToken,
         proxyUrl: input.proxyUrl,
+        minCreatedAt: input.forceRestart ? started : undefined,
       })
     }
 
@@ -1274,8 +1724,23 @@ export async function waitLovemiPortrait(input: {
         proxyUrl: input.proxyUrl,
       })
       if (job.ok) {
+        const jobAt = jobRecordTime(job.data)
+        if (input.forceRestart && jobAt && jobAt < started - 5000) {
+          lastErr = `忽略重新生图前的旧 job ${jobId}`
+          jobId = undefined
+          await sleep(1200)
+          continue
+        }
         const st = String(job.data.status || '')
         jobStatus = st
+        const outputs =
+          job.data.outputs && typeof job.data.outputs === 'object'
+            ? (job.data.outputs as Record<string, unknown>)
+            : {}
+        const outputAssetId = pickAssetId(outputs)
+        const outputCdn = pickPortraitUrl(outputs)
+        const detail = extractJobError(job.data)
+        const errorCode = extractJobErrorCode(job.data)
         const live = (job.data.live || {}) as Record<string, unknown>
         const progress = live.progress != null ? ` · ${live.progress}%` : ''
         const line = `Lovemi 生图 ${st}${progress}`
@@ -1288,61 +1753,100 @@ export async function waitLovemiPortrait(input: {
             message: line,
           })
         }
-        if (/fail|error|cancel/i.test(st)) {
-          const detail =
-            (typeof job.data.error === 'string' && job.data.error) ||
-            (typeof (job.data.error as { message?: string } | undefined)?.message === 'string' &&
-              (job.data.error as { message: string }).message) ||
-            (typeof job.data.message === 'string' && job.data.message) ||
-            ''
-          if (!didFailRestart) {
-            didFailRestart = true
-            triedStart = true
-            const next = await tryStartPortraitJob({
-              characterId: input.characterId,
-              sessionToken: input.sessionToken,
-              proxyUrl: input.proxyUrl,
-            })
-            if (next && next !== jobId) {
-              jobId = next
-              await sleep(2000)
-              continue
-            }
-          }
+        if (isJobStatusTerminal(st) && !outputAssetId && !outputCdn && (detail || errorCode)) {
+          const hardFail = `Lovemi 生图终态无输出 · ${st}${errorCode ? ` · ${errorCode}` : ''}${detail ? ` · ${detail}` : ''}`
+        const hardFail2 = `Lovemi 生图终态无输出 · job=${jobId} · ${st}${
+          errorCode ? ` · ${errorCode}` : ''
+        }${detail ? ` · ${detail}` : ''}`
+          appendConsoleLog({
+            level: 'warn',
+            action: 'create_char',
+          message: hardFail2.slice(0, 900),
+          })
+          const mode = isNonRetriablePortraitErrorCode(errorCode) ? '不可重试' : '需重试'
           return {
             ok: false,
-            error: `生图 job 失败：${st}${detail ? ` · ${detail}` : ''}（角色已在，可点「重新生图」）`,
+            error: `生图失败（${mode}）· ${errorCode || st}${detail ? ` · ${detail}` : ''}`,
             jobId,
             jobStatus: st,
           }
         }
-        const fromJob =
-          pickPortraitUrl(job.data) ||
-          (typeof job.data.cdn_url === 'string' ? job.data.cdn_url : undefined) ||
-          (typeof (job.data.result as Record<string, unknown> | undefined)?.cdn_url === 'string'
-            ? String((job.data.result as Record<string, unknown>).cdn_url)
-            : undefined)
-        if (fromJob) {
-          const assetId = pickAssetId(job.data.outputs) || pickAssetId(job.data)
+        if (/fail|error|cancel/i.test(st)) {
+          const failLine = `Lovemi 生图 ${st}${detail ? ` · ${detail}` : ''}`
+          if (failLine !== lastLoggedJobLine) {
+            lastLoggedJobLine = failLine
+            appendConsoleLog({
+              level: 'warn',
+              action: 'create_char',
+              message: failLine,
+            })
+          }
+          const failedJobId = jobId
+          if (cancelled()) return { ok: false, error: '任务已取消', jobId, jobStatus }
+          const next = await tryStartPortraitJob({
+            characterId: input.characterId,
+            sessionToken: input.sessionToken,
+            proxyUrl: input.proxyUrl,
+          })
+          if (next && next !== failedJobId) {
+            jobId = next
+            failRestartCount += 1
+            lastLoggedJobLine = ''
+            await sleep(3000 + failRestartCount * 2000)
+            continue
+          }
+          const alt = await discoverPortraitJobId({
+            characterId: input.characterId,
+            sessionToken: input.sessionToken,
+            proxyUrl: input.proxyUrl,
+            excludeJobIds: failedJobId ? [failedJobId] : undefined,
+            minCreatedAt: input.forceRestart ? started : undefined,
+          })
+          if (alt && alt !== failedJobId) {
+            jobId = alt
+            lastLoggedJobLine = ''
+            await sleep(2000)
+            continue
+          }
+          if (failRestartCount < maxFailRestarts) {
+            failRestartCount += 1
+            triedStart = true
+            jobId = undefined
+            lastLoggedJobLine = ''
+            appendConsoleLog({
+              level: 'warn',
+              action: 'create_char',
+              message: `生图失败暂未开出新 job，${failRestartCount}/${maxFailRestarts} 后再试 · ${input.characterId.slice(0, 18)}`,
+            })
+            await sleep(10_000 + failRestartCount * 5000)
+            continue
+          }
           return {
-            ...(await portraitFromCdn(fromJob, input.proxyUrl, jobId)),
+            ok: false,
+            error: `生图 job 失败：${st}${detail ? ` · ${detail}` : ''}（已重试 ${failRestartCount} 次，可点「重新生图」）`,
+            jobId,
             jobStatus: st,
-            assetId,
+          }
+        }
+        if (outputCdn) {
+          return {
+            ...(await portraitFromCdn(outputCdn, input.proxyUrl, jobId)),
+            jobStatus: st,
+            assetId: outputAssetId,
           }
         }
         // job 已完成但 cdn 尚未写入：先拿 asset_id
         if (/complete|succeed|success|done/i.test(st) || st === 'completed') {
-          const assetId = pickAssetId(job.data.outputs) || pickAssetId(job.data)
-          if (assetId) {
+          if (outputAssetId) {
             // 再等一轮 CDN；同时把 asset 带回
-            const url = pickPortraitUrl(job.data)
-            if (url) {
+            if (outputCdn) {
               return {
-                ...(await portraitFromCdn(url, input.proxyUrl, jobId)),
+                ...(await portraitFromCdn(outputCdn, input.proxyUrl, jobId)),
                 jobStatus: st,
-                assetId,
+                assetId: outputAssetId,
               }
             }
+            lastErr = detail || errorCode || `job ${st} 但 outputs 尚无可用 cdn`
           }
         }
       } else {
@@ -1357,9 +1861,15 @@ export async function waitLovemiPortrait(input: {
     })
     if (ch.ok) {
       if (!jobId) jobId = pickJobId(ch.data)
-      const url = pickPortraitUrl(ch.data)
-      const assetId =
-        pickAssetId(ch.data.latest_portrait_candidate) || pickAssetId(ch.data.visual_profile)
+      const candidate = ch.data.latest_portrait_candidate as Record<string, unknown> | undefined
+      const visualProfile = ch.data.visual_profile as Record<string, unknown> | undefined
+      const strictCandidate = [candidate, visualProfile].find(
+        (item) => item && (!jobId || pickJobId(item) === jobId),
+      )
+      const url = strictCandidate ? pickPortraitUrl(strictCandidate) : undefined
+      const assetId = strictCandidate
+        ? pickAssetId(strictCandidate)
+        : undefined
       if (url) {
         return {
           ...(await portraitFromCdn(url, input.proxyUrl, jobId)),
@@ -1380,8 +1890,9 @@ export async function waitLovemiPortrait(input: {
       const items = Array.isArray(refs.data.items) ? (refs.data.items as Record<string, unknown>[]) : []
       const first = items.find(
         (x) =>
-          (typeof x.cdn_url === 'string' && x.cdn_url) ||
-          (typeof x.asset_id === 'string' && String(x.asset_id).startsWith('asset_')),
+          (!jobId || pickJobId(x) === jobId) &&
+          ((typeof x.cdn_url === 'string' && x.cdn_url) ||
+            (typeof x.asset_id === 'string' && String(x.asset_id).startsWith('asset_'))),
       )
       if (first) {
         const assetId =
@@ -1418,7 +1929,11 @@ export async function waitLovemiPortrait(input: {
       const img = items.find((it) => {
         const id = typeof it.asset_id === 'string' ? it.asset_id : ''
         const kind = String(it.asset_kind || it.kind || '')
-        return id.startsWith('asset_') && !/video/i.test(kind)
+        return (
+          id.startsWith('asset_') &&
+          !/video/i.test(kind) &&
+          (!jobId || pickJobId(it) === jobId)
+        )
       })
       if (img?.asset_id) {
         const cdn =
@@ -1481,10 +1996,39 @@ export async function resolvePortraitAssetId(input: {
   proxyUrl: string
   /** 已知生图 job，优先从 job.outputs 抠 asset */
   jobId?: string
+  /** 本次运行开始时间；明确早于此时间的旧素材一律拒绝 */
+  minCreatedAt?: number
   retries?: number
 }): Promise<{ ok: boolean; error?: string; assetId?: string; cdnUrl?: string }> {
   const retries = input.retries ?? 8
   let lastErr = ''
+  let expectedAssetId: string | undefined
+  let expectedCdnUrl: string | undefined
+  const directAssetId = (item: Record<string, unknown> | undefined) => {
+    const value = item?.asset_id
+    return typeof value === 'string' && value.startsWith('asset_') ? value : undefined
+  }
+  const directCdnUrl = (item: Record<string, unknown> | undefined) => {
+    if (!item) return undefined
+    return typeof item.cdn_url === 'string' && item.cdn_url.startsWith('http')
+      ? item.cdn_url
+      : pickDeepCdnUrl(item)
+  }
+  const matchesRun = (item: Record<string, unknown> | undefined) => {
+    if (!item) return false
+    const characterIds: string[] =
+      JSON.stringify(item).match(/(?:chr_|character_)[a-zA-Z0-9_-]+/g) ?? []
+    if (characterIds.length && !characterIds.includes(input.characterId)) return false
+    const candidateJobId = pickJobId(item)
+    if (input.jobId) {
+      if (candidateJobId) return candidateJobId === input.jobId
+      if (expectedAssetId) return directAssetId(item) === expectedAssetId
+      return false
+    }
+    const at = jobRecordTime(item)
+    if (input.minCreatedAt && at && at < input.minCreatedAt - 5000) return false
+    return true
+  }
 
   for (let attempt = 0; attempt < retries; attempt++) {
     if (attempt > 0) await sleep(800 + attempt * 400)
@@ -1496,9 +2040,13 @@ export async function resolvePortraitAssetId(input: {
         proxyUrl: input.proxyUrl,
       })
       if (job.ok) {
-        const assetId = pickAssetId(job.data.outputs) || pickAssetId(job.data)
-        const cdnUrl = pickPortraitUrl(job.data)
-        if (assetId) return { ok: true, assetId, cdnUrl }
+        // 只读 job.outputs。job 根对象里常含 input/reference asset，深挖会把旧图当输出。
+        expectedAssetId = pickAssetId(job.data.outputs)
+        expectedCdnUrl = pickPortraitUrl(
+          (job.data.outputs && typeof job.data.outputs === 'object'
+            ? job.data.outputs
+            : {}) as Record<string, unknown>,
+        )
       } else {
         lastErr = job.error || lastErr
       }
@@ -1511,28 +2059,21 @@ export async function resolvePortraitAssetId(input: {
     })
     if (ch.ok) {
       const cand = ch.data.latest_portrait_candidate as Record<string, unknown> | undefined
-      const fromCand = pickAssetId(cand)
-      if (fromCand) {
+      const fromCand = directAssetId(cand)
+      if (fromCand && matchesRun(cand)) {
         return {
           ok: true,
           assetId: fromCand,
-          cdnUrl: typeof cand?.cdn_url === 'string' ? cand.cdn_url : pickPortraitUrl(ch.data),
+          cdnUrl: directCdnUrl(cand) || (fromCand === expectedAssetId ? expectedCdnUrl : undefined),
         }
       }
-      const fromVp = pickAssetId(ch.data.visual_profile)
-      if (fromVp) return { ok: true, assetId: fromVp, cdnUrl: pickPortraitUrl(ch.data) }
-      const jobFromCh = pickJobId(ch.data)
-      if (jobFromCh && jobFromCh !== input.jobId) {
-        const job = await lovemiGetJson({
-          path: `/v1/jobs/${encodeURIComponent(jobFromCh)}`,
-          sessionToken: input.sessionToken,
-          proxyUrl: input.proxyUrl,
-        })
-        if (job.ok) {
-          const assetId = pickAssetId(job.data.outputs) || pickAssetId(job.data)
-          if (assetId) {
-            return { ok: true, assetId, cdnUrl: pickPortraitUrl(job.data) || pickPortraitUrl(ch.data) }
-          }
+      const visualProfile = ch.data.visual_profile as Record<string, unknown> | undefined
+      const fromVp = directAssetId(visualProfile)
+      if (fromVp && matchesRun(visualProfile)) {
+        return {
+          ok: true,
+          assetId: fromVp,
+          cdnUrl: directCdnUrl(visualProfile) || (fromVp === expectedAssetId ? expectedCdnUrl : undefined),
         }
       }
     } else {
@@ -1550,17 +2091,22 @@ export async function resolvePortraitAssetId(input: {
       const accepted = items.find(
         (x) =>
           String(x.status || '') === 'accepted' &&
-          typeof x.asset_id === 'string' &&
-          String(x.asset_id).startsWith('asset_'),
+          Boolean(directAssetId(x)) &&
+          matchesRun(x),
       )
       const first =
         accepted ||
-        items.find((x) => typeof x.asset_id === 'string' && String(x.asset_id).startsWith('asset_'))
-      if (first?.asset_id) {
+        items.find(
+          (x) =>
+            Boolean(directAssetId(x)) &&
+            matchesRun(x),
+        )
+      const firstAssetId = directAssetId(first)
+      if (firstAssetId) {
         return {
           ok: true,
-          assetId: String(first.asset_id),
-          cdnUrl: typeof first.cdn_url === 'string' ? first.cdn_url : undefined,
+          assetId: firstAssetId,
+          cdnUrl: directCdnUrl(first) || (firstAssetId === expectedAssetId ? expectedCdnUrl : undefined),
         }
       }
     } else {
@@ -1579,17 +2125,19 @@ export async function resolvePortraitAssetId(input: {
       }
       const items = Array.isArray(assets.data.items) ? (assets.data.items as Record<string, unknown>[]) : []
       const ranked = items.filter((it) => {
-        const id = typeof it.asset_id === 'string' ? it.asset_id : ''
+        const id = directAssetId(it) || ''
         const kind = String(it.asset_kind || it.kind || '')
-        return id.startsWith('asset_') && !/video/i.test(kind)
+        return id.startsWith('asset_') && !/video/i.test(kind) && matchesRun(it)
       })
+      ranked.sort((a, b) => jobRecordTime(b) - jobRecordTime(a))
       const prefer = ranked.find((it) => /portrait|cover|still|image|reference/i.test(String(it.asset_kind || it.kind || it.relation_type || '')))
       const hit = prefer || ranked[0]
-      if (hit?.asset_id) {
+      const hitAssetId = directAssetId(hit)
+      if (hitAssetId) {
         return {
           ok: true,
-          assetId: String(hit.asset_id),
-          cdnUrl: typeof hit.cdn_url === 'string' ? hit.cdn_url : undefined,
+          assetId: hitAssetId,
+          cdnUrl: directCdnUrl(hit) || (hitAssetId === expectedAssetId ? expectedCdnUrl : undefined),
         }
       }
     }
@@ -1603,6 +2151,8 @@ export async function fetchCharacterPortraitPreview(input: {
   characterId: string
   sessionToken: string
   proxyUrl: string
+  jobId?: string
+  minCreatedAt?: number
 }): Promise<{ ok: boolean; error?: string; assetId?: string; cdnUrl?: string }> {
   // 单轮快查：给前端 2s 轮询用，不要内部再重试 8 次
   const resolved = await resolvePortraitAssetId({ ...input, retries: 1 })
@@ -1619,7 +2169,12 @@ export async function fetchCharacterPortraitPreview(input: {
     const img = items.find((it) => {
       const kind = String(it.asset_kind || it.kind || '')
       const url = typeof it.cdn_url === 'string' ? it.cdn_url : ''
-      return url && /image|portrait|cover|still/i.test(kind)
+      const candidateJobId = pickJobId(it)
+      const at = jobRecordTime(it)
+      const runOk =
+        (!input.jobId || !candidateJobId || candidateJobId === input.jobId) &&
+        (!input.minCreatedAt || !at || at >= input.minCreatedAt - 5000)
+      return url && /image|portrait|cover|still/i.test(kind) && runOk
     })
     if (img && typeof img.cdn_url === 'string') {
       return {
@@ -1632,7 +2187,9 @@ export async function fetchCharacterPortraitPreview(input: {
       (it) =>
         typeof it.cdn_url === 'string' &&
         it.cdn_url &&
-        !String(it.asset_kind || '').includes('video'),
+        !String(it.asset_kind || '').includes('video') &&
+        (!input.jobId || !pickJobId(it) || pickJobId(it) === input.jobId) &&
+        (!input.minCreatedAt || !jobRecordTime(it) || jobRecordTime(it) >= input.minCreatedAt - 5000),
     )
     if (any && typeof any.cdn_url === 'string') {
       return {

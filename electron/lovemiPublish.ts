@@ -52,6 +52,49 @@ function adminToken(fallback?: string) {
   return secrets.adminSessionToken || fallback || ''
 }
 
+async function verifyAssetsBelongToCharacter(input: {
+  characterId: string
+  coverAssetId: string
+  videoAssetId?: string
+  token: string
+  proxyUrl: string
+}): Promise<{ ok: boolean; error?: string }> {
+  if (input.videoAssetId && input.videoAssetId === input.coverAssetId) {
+    return { ok: false, error: '发布已阻止：封面与视频 asset_id 相同' }
+  }
+  const wanted = new Set([input.coverAssetId, input.videoAssetId || ''].filter(Boolean))
+  if (!wanted.size) return { ok: false, error: '发布前缺少素材 ID' }
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt) await new Promise((resolve) => setTimeout(resolve, 1500 * attempt))
+    const found = new Set<string>()
+    for (const scope of ['active', 'all'] as const) {
+      const assets = await apiJson({
+        method: 'GET',
+        path: `/v1/characters/${encodeURIComponent(input.characterId)}/assets?scope=${scope}`,
+        token: input.token,
+        proxyUrl: input.proxyUrl,
+      })
+      if (!assets.ok) continue
+      const items = Array.isArray(assets.data.items)
+        ? (assets.data.items as Record<string, unknown>[])
+        : []
+      for (const item of items) {
+        const id = String(item.asset_id || item.id || '')
+        if (!wanted.has(id)) continue
+        const kind = String(item.asset_kind || item.kind || '').toLowerCase()
+        if (id === input.coverAssetId && /video/.test(kind)) continue
+        if (id === input.videoAssetId && kind && !/video/.test(kind)) continue
+        found.add(id)
+      }
+    }
+    if ([...wanted].every((id) => found.has(id))) return { ok: true }
+  }
+  return {
+    ok: false,
+    error: `发布已阻止：素材不属于当前角色或尚未同步（${[...wanted].join(', ')}）`,
+  }
+}
+
 export async function listMineCharacters(input: {
   proxyUrl: string
   sessionToken?: string
@@ -353,6 +396,22 @@ export async function setPreviewAndMaybePublish(input: {
   const token = adminToken(input.sessionToken)
   if (!token) return { ok: false, error: '缺少管理员 Bearer' }
 
+  const verified = await verifyAssetsBelongToCharacter({
+    characterId: input.characterId,
+    coverAssetId: input.coverAssetId,
+    videoAssetId: input.videoAssetId,
+    token,
+    proxyUrl: input.proxyUrl,
+  })
+  if (!verified.ok) {
+    appendConsoleLog({
+      level: 'error',
+      action: 'create_char',
+      message: verified.error || '发布前素材归属校验失败',
+    })
+    return { ok: false, error: verified.error, presentationOk: false }
+  }
+
   let acceptOk: boolean | undefined
   if (!input.skipAcceptVisualRef) {
     const acc = await acceptVisualReference({
@@ -375,30 +434,15 @@ export async function setPreviewAndMaybePublish(input: {
     clearMotionAsset: !input.videoAssetId,
   })
   if (!presentation.ok) {
-    // 有视频但挂不上时，降级为仅封面（仍可发布）
     if (input.videoAssetId) {
-      const fallback = await putCharacterPresentation({
-        characterId: input.characterId,
-        proxyUrl: input.proxyUrl,
-        sessionToken: token,
-        coverAssetId: input.coverAssetId,
-        clearMotionAsset: true,
-      })
-      if (!fallback.ok) {
-        return {
-          ok: false,
-          error: presentation.error || '设 presentation 失败',
-          acceptOk,
-          presentationOk: false,
-          videoAttachOk: false,
-          data: presentation.data,
-        }
+      return {
+        ok: false,
+        error: `动态视频未能绑定，已阻止仅封面发布：${presentation.error || '未知错误'}`,
+        acceptOk,
+        presentationOk: false,
+        videoAttachOk: false,
+        data: presentation.data,
       }
-      appendConsoleLog({
-        level: 'warn',
-        action: 'create_char',
-        message: `动态视频未能挂上（${presentation.error}），已用仅封面 presentation`,
-      })
     } else {
       return {
         ok: false,

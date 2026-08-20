@@ -194,12 +194,13 @@ export async function startVlessBridge(opts: {
         const config = buildSingBoxConfig(node, VLESS_LISTEN_PORT)
         fs.writeFileSync(confPath, JSON.stringify(config, null, 2), 'utf8')
 
-        child = spawn(bin, ['run', '-c', confPath], {
-          stdio: ['ignore', 'pipe', 'pipe'],
+        const spawned = spawn(bin, ['run', '-c', confPath], {
+          stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env },
         })
-        child.on('exit', () => {
-          child = null
+        child = spawned
+        spawned.on('exit', () => {
+          if (child === spawned) child = null
         })
 
         try {

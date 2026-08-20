@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   useCreateCharStore,
   slotLabel,
+  findSlotByCharacterId,
+  slotAcceptsPortrait,
+  portraitMatchesSlot,
+  CREATE_CHAR_SLOT_IDS,
   type CreateCharSlotId,
   type CreateCharSlotDraft,
 } from '../store/createCharStore'
@@ -75,18 +79,66 @@ function formatClock(totalSec: number) {
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
 }
 
+/** IPC 进度：有 characterId 时只写入拥有该 ID 的槽；孤儿事件必须匹配 clientRunEpoch */
+function resolveProgressSlot(p: {
+  clientSlot?: 1 | 2 | 3 | 4 | 5
+  clientRunEpoch?: number
+  runId?: string
+  characterId?: string
+  portraitCdnUrl?: string
+  coverAssetId?: string
+}): CreateCharSlotId | null {
+  const charId = p.characterId?.trim()
+  const slotFromClient = CREATE_CHAR_SLOT_IDS.includes(p.clientSlot as CreateCharSlotId)
+    ? (p.clientSlot as CreateCharSlotId)
+    : null
+
+  const epochOk = (slotId: CreateCharSlotId) => {
+    if (p.clientRunEpoch == null) return true
+    return useCreateCharStore.getState().slots[slotId].draftEpoch === p.clientRunEpoch
+  }
+
+  if (charId) {
+    const owner = findSlotByCharacterId(charId)
+    if (owner) return owner
+    // 该 characterId 不属于任何槽：仅允许写回发起本次全自动的槽，且 epoch 必须一致
+    if (slotFromClient && epochOk(slotFromClient)) return slotFromClient
+    return null
+  }
+
+  if (slotFromClient) {
+    if (!epochOk(slotFromClient)) return null
+    return slotFromClient
+  }
+  return null
+}
+
+function hasActiveFullAutoQueue(): boolean {
+  const slots = useCreateCharStore.getState().slots
+  return CREATE_CHAR_SLOT_IDS.some((id) => slots[id].queueStatus !== 'idle')
+}
+
+function slotStillMatches(slot: CreateCharSlotId, epoch: number, characterId?: string): boolean {
+  const current = useCreateCharStore.getState().slots[slot]
+  return (
+    current.draftEpoch === epoch &&
+    (!characterId || current.createdCharacterId === characterId)
+  )
+}
+
 export function CreateCharacterPage({ active }: { active: boolean }) {
   const pageRef = useRef<HTMLElement>(null)
-  const accounts = useEmailStore((s) => s.accounts)
   const setToast = useEmailStore((s) => s.setToast)
   const patch = useCreateCharStore((s) => s.patch)
   const patchSlot = useCreateCharStore((s) => s.patchSlot)
+  const bumpSlotEpoch = useCreateCharStore((s) => s.bumpSlotEpoch)
   const pushStep = useCreateCharStore((s) => s.pushStep)
   const clearStepLog = useCreateCharStore((s) => s.clearStepLog)
   const activeSlot = useCreateCharStore((s) => s.activeSlot)
   const setActiveSlot = useCreateCharStore((s) => s.setActiveSlot)
   const slots = useCreateCharStore((s) => s.slots)
-  const adminId = useCreateCharStore((s) => s.adminId)
+  const adminTokenInput = useCreateCharStore((s) => s.adminTokenInput)
+  const downloadsDir = useCreateCharStore((s) => s.downloadsDir)
   const teamoBase = useCreateCharStore((s) => s.teamoBase)
   const teamoModel = useCreateCharStore((s) => s.teamoModel)
   const teamoKeyInput = useCreateCharStore((s) => s.teamoKeyInput)
@@ -105,6 +157,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const lastResult = draft.lastResult
   const userHint = draft.userHint
   const createdCharacterId = draft.createdCharacterId
+  const portraitCharacterId = draft.portraitCharacterId
+  const draftEpoch = draft.draftEpoch
+  const queueStatus = draft.queueStatus
+  const queuePosition = draft.queuePosition
   const waitStartedAt = draft.waitStartedAt
   const motionPrompt = draft.motionPrompt
   const motionPreviewUrl = draft.motionPreviewUrl
@@ -119,9 +175,76 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const portraitRestoreTried = useRef<Set<string>>(new Set())
   const videoCacheTried = useRef<Set<string>>(new Set())
   const portraitSaveTried = useRef<Set<string>>(new Set())
+  /** 槽 → 当前流水线 epoch（贴新图 / 全自动开始时更新） */
+  const slotRunEpoch = useRef<Record<CreateCharSlotId, number>>({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 })
+
+  const beginSlotRun = useCallback(
+    (slotId: CreateCharSlotId, clearCharacter: boolean) => {
+      const previous = useCreateCharStore.getState().slots[slotId]
+      if (previous.runId && previous.queueStatus !== 'idle') {
+        void window.lovemi?.createCharCancelFullAuto?.({ runId: previous.runId })
+      }
+      const epoch = bumpSlotEpoch(slotId)
+      slotRunEpoch.current[slotId] = epoch
+      patchSlot(slotId, {
+        draftEpoch: epoch,
+        portraitUrl: null,
+        portraitCdnUrl: null,
+        portraitCharacterId: '',
+        queueStatus: 'idle',
+        queuePosition: 0,
+        runId: '',
+        runStartedAt: null,
+        ...(clearCharacter
+          ? {
+              createdCharacterId: '',
+              portraitJobId: '',
+              motionJobId: '',
+              motionPreviewUrl: null,
+              motionInputAssetId: '',
+              motionOutputAssetId: '',
+              listingId: '',
+            }
+          : {}),
+      })
+      return epoch
+    },
+    [bumpSlotEpoch, patchSlot],
+  )
+
+  const applyPortraitUpdate = useCallback(
+    (
+      slotId: CreateCharSlotId,
+      characterId: string,
+      partial: {
+        portraitUrl: string
+        portraitCdnUrl: string
+        motionInputAssetId?: string
+      },
+      expectedEpoch?: number,
+    ): boolean => {
+      const st = useCreateCharStore.getState().slots[slotId]
+      if (!slotAcceptsPortrait(st, characterId)) return false
+      if (expectedEpoch != null && st.draftEpoch !== expectedEpoch) return false
+      patchSlot(slotId, {
+        ...partial,
+        portraitCharacterId: characterId,
+      })
+      return true
+    },
+    [patchSlot],
+  )
+
+  const showPortraitUrl = portraitMatchesSlot(draft) ? portraitUrl : null
 
   const anySlotWaiting = Boolean(
-    slots[1].waitStartedAt || slots[2].waitStartedAt || slots[3].waitStartedAt,
+    CREATE_CHAR_SLOT_IDS.some((id) => slots[id].waitStartedAt || slots[id].queueStatus !== 'idle'),
+  )
+  const fullAutoQueueBusy = CREATE_CHAR_SLOT_IDS.some(
+    (id) => slots[id].queueStatus !== 'idle',
+  )
+  const manualOperationBusy = CREATE_CHAR_SLOT_IDS.some(
+    (id) => slots[id].queueStatus === 'idle' && slots[id].busy !== 'idle',
   )
   useEffect(() => {
     if (!anySlotWaiting) return
@@ -157,43 +280,64 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   }, [])
 
   const ensurePlayableVideoUrl = useCallback(
-    async (cdnOrUrl: string | null | undefined, slot?: CreateCharSlotId) => {
+    async (
+      cdnOrUrl: string | null | undefined,
+      slot?: CreateCharSlotId,
+      expectedAssetId?: string,
+      expectedRunId?: string,
+    ) => {
       const slotId = slot ?? useCreateCharStore.getState().activeSlot
       const write = (p: Parameters<typeof patchSlot>[1]) => patchSlot(slotId, p)
-      if (!cdnOrUrl) return
+      const start = useCreateCharStore.getState().slots[slotId]
+      if (expectedRunId && start.runId !== expectedRunId) return false
+      if (!cdnOrUrl) return false
       if (cdnOrUrl.startsWith('lovemi-cache://') || cdnOrUrl.startsWith('blob:') || cdnOrUrl.startsWith('data:')) {
         write({ motionPreviewUrl: cdnOrUrl })
-        return
+        return true
       }
-      if (!cdnOrUrl.startsWith('http')) return
-      const cacheKey = `${slotId}:${cdnOrUrl}`
-      if (videoCacheTried.current.has(cacheKey)) return
+      if (!cdnOrUrl.startsWith('http')) return false
+      const cacheKey = `${slotId}:${start.createdCharacterId}:${expectedAssetId || ''}:${expectedRunId || start.runId}:${cdnOrUrl}`
+      if (videoCacheTried.current.has(cacheKey)) {
+        return useCreateCharStore.getState().slots[slotId].motionPreviewUrl?.startsWith('lovemi-cache://') === true
+      }
       if (!window.lovemi?.createCharCacheMedia) {
         write({ motionPreviewUrl: cdnOrUrl })
-        return
+        return false
       }
       videoCacheTried.current.add(cacheKey)
       const outbound = await resolveProxyUrl()
       if (!outbound.proxyUrl) {
         write({ motionPreviewUrl: cdnOrUrl })
         setToast(outbound.error || '无代理，视频可能无法播放')
-        return
+        return false
       }
       setToast(`槽${slotId}：正在缓存视频…`)
       const name = characterDisplayName(slotId)
+      const videoFileTag = `${name}_槽${slotId}_${start.createdCharacterId.slice(-10)}_a${(
+        expectedAssetId ||
+        start.motionOutputAssetId ||
+        'unknown'
+      ).slice(-8)}_r${(expectedRunId || start.runId || 'manual').slice(0, 8)}`
       const res = await window.lovemi.createCharCacheMedia({
         cdnUrl: cdnOrUrl,
         proxyUrl: outbound.proxyUrl,
-        displayName: `${name}_槽${slotId}`,
+        displayName: videoFileTag,
         kind: 'video',
+        characterId: start.createdCharacterId || undefined,
+        assetId: expectedAssetId || start.motionOutputAssetId || undefined,
+        runId: expectedRunId || start.runId || undefined,
       })
+      const current = useCreateCharStore.getState().slots[slotId]
+      if (expectedRunId && current.runId !== expectedRunId) return false
       if (res.ok && res.cacheUrl) {
         write({ motionPreviewUrl: res.cacheUrl })
         pushStep(slotId, 'ok', '视频预览缓存已完成')
         setToast(res.twitterPath ? `槽${slotId}：视频已存推特资源` : `槽${slotId}：视频预览已就绪`)
+        return Boolean(res.twitterPath)
       } else {
         write({ motionPreviewUrl: cdnOrUrl })
         setToast(res.error || '视频缓存失败，尝试直链播放')
+        return false
       }
     },
     [patchSlot, setToast, characterDisplayName, pushStep],
@@ -204,50 +348,90 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       cdnOrUrl: string | null | undefined,
       slot?: CreateCharSlotId,
       displayNameOverride?: string,
+      expectedCharacterId?: string,
+      expectedEpoch?: number,
+      expectedAssetId?: string,
+      expectedRunId?: string,
     ) => {
       const slotId = slot ?? useCreateCharStore.getState().activeSlot
-      const write = (p: Parameters<typeof patchSlot>[1]) => patchSlot(slotId, p)
-      if (!cdnOrUrl?.startsWith('http')) return
-      const cacheKey = `${slotId}:${cdnOrUrl}`
-      if (portraitSaveTried.current.has(cacheKey)) return
-      if (!window.lovemi?.createCharCacheMedia) return
+      if (!cdnOrUrl?.startsWith('http')) return false
+      const st0 = useCreateCharStore.getState().slots[slotId]
+      const charAtStart = (expectedCharacterId?.trim() || st0.createdCharacterId || '').trim()
+      const epochAtStart = expectedEpoch ?? st0.draftEpoch
+      if (!charAtStart || !slotAcceptsPortrait(st0, charAtStart)) return false
+      if (st0.draftEpoch !== epochAtStart) return false
+      if (expectedRunId && st0.runId !== expectedRunId) return false
+      const cacheKey = `${slotId}:${epochAtStart}:${charAtStart}:${expectedAssetId || ''}:${expectedRunId || st0.runId}:${cdnOrUrl}`
+      if (portraitSaveTried.current.has(cacheKey)) {
+        return useCreateCharStore.getState().slots[slotId].portraitUrl?.startsWith('lovemi-cache://') === true
+      }
+      if (!window.lovemi?.createCharCacheMedia) return false
       const outbound = await resolveProxyUrl()
       if (!outbound.proxyUrl) {
         setToast(outbound.error || '无代理，立绘预览可能加载失败', 5000)
-        return
+        return false
       }
-      // 成功前不占 tried，失败可重试
       portraitSaveTried.current.add(cacheKey)
       const name = (displayNameOverride || characterDisplayName(slotId)).trim() || '未命名'
+      const fileTag = `${name}_槽${slotId}_${charAtStart.slice(-10)}_a${(
+        expectedAssetId ||
+        st0.motionInputAssetId ||
+        'unknown'
+      ).slice(-8)}_r${(expectedRunId || st0.runId || `e${epochAtStart}`).slice(0, 8)}`
       try {
         const res = await window.lovemi.createCharCacheMedia({
           cdnUrl: cdnOrUrl,
           proxyUrl: outbound.proxyUrl,
-          displayName: `${name}_槽${slotId}`,
+          displayName: fileTag,
           kind: 'portrait',
+          characterId: charAtStart,
+          assetId: expectedAssetId || st0.motionInputAssetId || undefined,
+          runId: expectedRunId || st0.runId || undefined,
         })
+        const cur = useCreateCharStore.getState().slots[slotId]
+        if (cur.draftEpoch !== epochAtStart) {
+          portraitSaveTried.current.delete(cacheKey)
+          return false
+        }
+        if (!slotAcceptsPortrait(cur, charAtStart)) {
+          portraitSaveTried.current.delete(cacheKey)
+          return false
+        }
+        if (expectedRunId && cur.runId !== expectedRunId) {
+          portraitSaveTried.current.delete(cacheKey)
+          return false
+        }
         if (res.ok && res.cacheUrl) {
-          // 关键必须用本地 cache；CDN 直链在渲染进程常黑/裂（无代理）
-          write({
-            portraitUrl: res.cacheUrl,
-            portraitCdnUrl: cdnOrUrl,
-          })
+          const ok = applyPortraitUpdate(
+            slotId,
+            charAtStart,
+            { portraitUrl: res.cacheUrl, portraitCdnUrl: cdnOrUrl },
+            epochAtStart,
+          )
+          if (!ok) {
+            portraitSaveTried.current.delete(cacheKey)
+            return false
+          }
           if (res.twitterPath) {
             pushStep(slotId, 'ok', `立绘已存推特资源 · ${name}`)
             setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
+            return true
           } else {
             pushStep(slotId, 'ok', '立绘预览已缓存')
+            return false
           }
         } else {
           portraitSaveTried.current.delete(cacheKey)
           setToast(res.error || `槽${slotId}：立绘缓存失败`, 6000)
+          return false
         }
       } catch (err) {
         portraitSaveTried.current.delete(cacheKey)
         setToast(err instanceof Error ? err.message : '立绘缓存异常', 6000)
+        return false
       }
     },
-    [patchSlot, setToast, characterDisplayName, pushStep],
+    [setToast, characterDisplayName, pushStep, applyPortraitUpdate],
   )
 
   const waitMaxSec =
@@ -255,22 +439,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       ? WAIT_MAX_PUBLISH_SEC
       : WAIT_MAX_PORTRAIT_OR_MOTION_SEC
 
-  const withToken = useMemo(
-    () =>
-      accounts.filter(
-        (a) =>
-          !a.id.startsWith('demo-') &&
-          !a.email.endsWith('@example.com') &&
-          Boolean(a.lovemiSessionToken),
-      ),
-    [accounts],
-  )
-
-  const admin = withToken.find((a) => a.id === adminId)
-
   /** 重新进入页面时：有角色 ID 但立绘对比区空了 → 从 Lovemi 拉回 CDN 预览 */
   useEffect(() => {
     if (!active) return
+    if (hasActiveFullAutoQueue()) return
     if (!createdCharacterId) return
     if (portraitUrl?.startsWith('http') || portraitUrl?.startsWith('lovemi-cache://')) return
     const restoreKey = `${activeSlot}:${createdCharacterId}`
@@ -285,21 +457,28 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       if (!outbound.proxyUrl || cancelled) return
       const res = await window.lovemi!.createCharRefreshPortrait!({
         characterId: charId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
       })
       if (cancelled || !res.ok || !res.cdnUrl) {
-        // 允许稍后重试（全自动还在跑、站内刚出图）
         portraitRestoreTried.current.delete(restoreKey)
         return
       }
-      const next: { portraitUrl: string; portraitCdnUrl?: string; motionInputAssetId?: string } = {
-        portraitUrl: res.cdnUrl,
-        portraitCdnUrl: res.cdnUrl,
-      }
       const cur = useCreateCharStore.getState().slots[slotAtStart]
-      if (res.assetId && !cur.motionInputAssetId) next.motionInputAssetId = res.assetId
-      patchSlot(slotAtStart, next)
+      if (cur.createdCharacterId !== charId || !slotAcceptsPortrait(cur, charId)) return
+      if (
+        !applyPortraitUpdate(
+          slotAtStart,
+          charId,
+          { portraitUrl: res.cdnUrl, portraitCdnUrl: res.cdnUrl },
+          cur.draftEpoch,
+        )
+      ) {
+        return
+      }
+      if (res.assetId && !cur.motionInputAssetId) {
+        patchSlot(slotAtStart, { motionInputAssetId: res.assetId })
+      }
       const name = (() => {
         try {
           const obj = JSON.parse(cur.payloadText || '{}') as Record<string, unknown>
@@ -308,7 +487,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           return undefined
         }
       })()
-      void ensurePortraitDownloaded(res.cdnUrl, slotAtStart, name)
+      void ensurePortraitDownloaded(res.cdnUrl, slotAtStart, name, charId, cur.draftEpoch)
     })()
     return () => {
       cancelled = true
@@ -318,78 +497,121 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     activeSlot,
     createdCharacterId,
     portraitUrl,
-    admin?.lovemiSessionToken,
+    hasAdminToken,
     patchSlot,
     ensurePortraitDownloaded,
+    applyPortraitUpdate,
   ])
 
-  /** CDN 直链无法在渲染进程稳定显示 → 经代理落到 lovemi-cache:// */
+  /** CDN 直链无法在渲染进程稳定显示 → 三槽各自经代理落到 lovemi-cache:// */
   useEffect(() => {
     if (!active) return
-    const cdn =
-      (portraitCdnUrl?.startsWith('http') && portraitCdnUrl) ||
-      (portraitUrl?.startsWith('http') && portraitUrl) ||
-      null
-    if (!cdn) return
-    if (portraitUrl?.startsWith('lovemi-cache://') || portraitUrl?.startsWith('data:')) return
-    void ensurePortraitDownloaded(cdn, activeSlot)
-  }, [active, activeSlot, portraitUrl, portraitCdnUrl, ensurePortraitDownloaded])
-
-  /** 等待立绘时前端也快刷：站内已出图时不必干等主进程慢循环 */
-  useEffect(() => {
-    if (!active) return
-    if (!createdCharacterId) return
-    if (portraitUrl?.startsWith('http') || portraitUrl?.startsWith('lovemi-cache://')) return
-    if (busy !== 'create' && busy !== 'auto' && busy !== 'portrait') return
-    if (!window.lovemi?.createCharRefreshPortrait) return
-    const slotAtStart = activeSlot
-    const charId = createdCharacterId
     let cancelled = false
-    let inFlight = false
-    const tick = async () => {
-      if (cancelled || inFlight) return
-      inFlight = true
+    const tick = () => {
+      if (cancelled) return
+      if (hasActiveFullAutoQueue()) return
+      for (const slotId of CREATE_CHAR_SLOT_IDS) {
+        const st = useCreateCharStore.getState().slots[slotId]
+        const cdn =
+          (st.portraitCdnUrl?.startsWith('http') && st.portraitCdnUrl) ||
+          (st.portraitUrl?.startsWith('http') && st.portraitUrl) ||
+          null
+        if (!cdn) continue
+        if (st.portraitUrl?.startsWith('lovemi-cache://') || st.portraitUrl?.startsWith('data:')) continue
+        if (!st.createdCharacterId || !portraitMatchesSlot(st)) continue
+        void ensurePortraitDownloaded(
+          cdn,
+          slotId,
+          undefined,
+          st.createdCharacterId,
+          st.draftEpoch,
+        )
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [active, ensurePortraitDownloaded])
+
+  /** CDN 视频：三槽各自缓存 */
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    const tick = () => {
+      if (cancelled) return
+      if (hasActiveFullAutoQueue()) return
+      for (const slotId of CREATE_CHAR_SLOT_IDS) {
+        const url = useCreateCharStore.getState().slots[slotId].motionPreviewUrl
+        if (url?.startsWith('http')) void ensurePlayableVideoUrl(url, slotId)
+      }
+    }
+    tick()
+    const timer = window.setInterval(tick, 4000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [active, ensurePlayableVideoUrl])
+
+  /** 等待立绘时三槽并行快刷（不只看当前激活槽） */
+  useEffect(() => {
+    if (!active) return
+    if (!window.lovemi?.createCharRefreshPortrait) return
+    let cancelled = false
+    const inflight = new Set<CreateCharSlotId>()
+
+    const tickSlot = async (slotId: CreateCharSlotId) => {
+      if (cancelled || inflight.has(slotId)) return
+      if (hasActiveFullAutoQueue()) return
+      const st = useCreateCharStore.getState().slots[slotId]
+      const charId = st.createdCharacterId
+      if (!charId) return
+      if (st.portraitUrl?.startsWith('http') || st.portraitUrl?.startsWith('lovemi-cache://')) return
+      if (st.busy !== 'create' && st.busy !== 'auto' && st.busy !== 'portrait') return
+      inflight.add(slotId)
       try {
         const outbound = await resolveProxyUrl()
         if (!outbound.proxyUrl || cancelled) return
         const res = await window.lovemi!.createCharRefreshPortrait!({
           characterId: charId,
-          sessionToken: admin?.lovemiSessionToken,
+          sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
           proxyUrl: outbound.proxyUrl,
         })
         if (cancelled || !res.ok || !res.cdnUrl) return
-        const cur = useCreateCharStore.getState().slots[slotAtStart]
-        if (cur.createdCharacterId !== charId) return
-        patchSlot(slotAtStart, {
-          portraitUrl: res.cdnUrl,
-          portraitCdnUrl: res.cdnUrl,
-          ...(res.assetId && !cur.motionInputAssetId ? { motionInputAssetId: res.assetId } : {}),
-        })
-        pushStep(slotAtStart, 'ok', '立绘已拉回（站内同步）')
-        setToast(`槽${slotAtStart}：立绘已拉回`)
-        void ensurePortraitDownloaded(res.cdnUrl, slotAtStart)
+        const cur = useCreateCharStore.getState().slots[slotId]
+        if (cur.createdCharacterId !== charId || !slotAcceptsPortrait(cur, charId)) return
+        if (
+          !applyPortraitUpdate(
+            slotId,
+            charId,
+            { portraitUrl: res.cdnUrl, portraitCdnUrl: res.cdnUrl },
+            cur.draftEpoch,
+          )
+        ) {
+          return
+        }
+        if (res.assetId && !cur.motionInputAssetId) {
+          patchSlot(slotId, { motionInputAssetId: res.assetId })
+        }
+        pushStep(slotId, 'ok', '立绘已拉回（站内同步）')
+        void ensurePortraitDownloaded(res.cdnUrl, slotId, undefined, charId, cur.draftEpoch)
       } finally {
-        inFlight = false
+        inflight.delete(slotId)
       }
     }
-    const timer = window.setInterval(() => void tick(), 2000)
-    void tick()
+
+    const timer = window.setInterval(() => {
+      for (const slotId of CREATE_CHAR_SLOT_IDS) void tickSlot(slotId)
+    }, 2500)
+    for (const slotId of CREATE_CHAR_SLOT_IDS) void tickSlot(slotId)
     return () => {
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [
-    active,
-    activeSlot,
-    createdCharacterId,
-    portraitUrl,
-    busy,
-    admin?.lovemiSessionToken,
-    patchSlot,
-    ensurePortraitDownloaded,
-    setToast,
-    pushStep,
-  ])
+  }, [active, hasAdminToken, patchSlot, ensurePortraitDownloaded, pushStep, applyPortraitUpdate])
 
   useEffect(() => {
     if (!pageRef.current) return
@@ -400,33 +622,15 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     void (async () => {
       const cfg = await window.lovemi?.createCharConfig?.()
       if (!cfg) return
-      const next: {
-        teamoBase: string
-        teamoModel: string
-        hasApiKey: boolean
-        hasAdminToken: boolean
-        adminId?: string
-      } = {
+      patch({
         teamoBase: cfg.teamoApiBase || 'https://api.teamorouter.com/v1',
         teamoModel: cfg.teamoModel || 'gpt-5.4-mini',
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
-      }
-      if (cfg.adminAccountId && withToken.some((a) => a.id === cfg.adminAccountId)) {
-        next.adminId = cfg.adminAccountId
-      } else if (cfg.adminEmailLocal) {
-        const hit = withToken.find((a) => a.email.split('@')[0] === cfg.adminEmailLocal)
-        if (hit) next.adminId = hit.id
-      }
-      patch(next)
+        downloadsDir: cfg.downloadsDir || '',
+      })
     })()
-  }, [withToken, patch])
-
-  // 默认：优先已记住的；否则选第一个有 Bearer 的（用户可改成自己的号）
-  useEffect(() => {
-    if (adminId || !withToken.length) return
-    patch({ adminId: withToken[0].id })
-  }, [adminId, withToken, patch])
+  }, [patch])
 
   const ingestBlob = useCallback(
     async (blob: Blob) => {
@@ -450,33 +654,26 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       for (const key of [...videoCacheTried.current]) {
         if (key.startsWith(`${slotId}:`)) videoCacheTried.current.delete(key)
       }
-      patch({
+      const epoch = beginSlotRun(slotId, true)
+      patchSlot(slotId, {
         imageBase64: base64,
         mimeType: mime,
         previewUrl: URL.createObjectURL(blob),
         payloadText: '',
-        portraitUrl: null,
-        portraitCdnUrl: null,
         portraitPrompt: '',
-        createdCharacterId: '',
-        portraitJobId: '',
-        motionJobId: '',
-        motionPreviewUrl: null,
-        motionPrompt: '',
-        motionInputAssetId: '',
-        motionOutputAssetId: '',
-        listingId: '',
-        lastResult: '',
-        publishResult: '',
+        userHint: old.userHint,
         busy: 'idle',
         waitStartedAt: null,
         waitKind: null,
         stepLog: [],
+        lastResult: '',
+        publishResult: '',
+        draftEpoch: epoch,
       })
-      pushStep(slotId, 'run', '已粘贴新参考图 · 旧草稿已清空，准备开始')
-      setToast(`槽${slotId}：已换新参考图 · 旧立绘/参数/视频已清空`)
+      pushStep(slotId, 'run', '已粘贴新参考图 · 旧任务/立绘已作废')
+      setToast(`槽${slotId}：新参考图已就绪 · 此前进行中的生图结果将被忽略`)
     },
-    [setToast, patch, pushStep],
+    [setToast, patchSlot, pushStep, beginSlotRun],
   )
 
   useEffect(() => {
@@ -502,28 +699,92 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   useEffect(() => {
     if (!window.lovemi?.onCreateCharProgress) return
     return window.lovemi.onCreateCharProgress((p) => {
-      const slotId = (p.clientSlot === 1 || p.clientSlot === 2 || p.clientSlot === 3
-        ? p.clientSlot
-        : useCreateCharStore.getState().activeSlot) as CreateCharSlotId
+      const slotId = resolveProgressSlot(p)
+      if (slotId == null) return
+      const cur = useCreateCharStore.getState().slots[slotId]
+      if (p.clientRunEpoch != null && cur.draftEpoch !== p.clientRunEpoch) return
+      if (p.runId && cur.runId && cur.runId !== p.runId) return
+      if (p.stage === 'queued') {
+        patchSlot(slotId, {
+          queueStatus: 'queued',
+          queuePosition: Math.max(1, Number(p.queuePosition || 1)),
+          waitStartedAt: null,
+          runStartedAt: null,
+        })
+        return
+      }
+      if (p.stage === 'running') {
+        const startedAt = p.runStartedAt || Date.now()
+        patchSlot(slotId, {
+          queueStatus: 'running',
+          queuePosition: 0,
+          waitStartedAt: startedAt,
+          runStartedAt: startedAt,
+        })
+        pushStep(slotId, 'run', '已出队 · 开始独占全自动流水线')
+        return
+      }
+      if (p.stage === 'cancelled') {
+        patchSlot(slotId, {
+          queueStatus: 'idle',
+          queuePosition: 0,
+          busy: 'idle',
+          waitStartedAt: null,
+          waitKind: null,
+        })
+        return
+      }
+      if (p.stage === 'failed') {
+        const failMsg = typeof (p as { error?: unknown }).error === 'string' ? (p as { error?: string }).error : ''
+        patchSlot(slotId, {
+          queueStatus: 'idle',
+          queuePosition: 0,
+          busy: 'idle',
+          waitStartedAt: null,
+          waitKind: null,
+        })
+        if (failMsg) pushStep(slotId, 'err', `全自动失败 · ${failMsg}`)
+        return
+      }
+      const charId = p.characterId?.trim()
+      const runEpoch = p.clientRunEpoch ?? cur.draftEpoch
+
       const next: Parameters<typeof patchSlot>[1] = {}
       if (p.payload) next.payloadText = JSON.stringify(p.payload, null, 2)
       if (p.portraitPrompt) next.portraitPrompt = p.portraitPrompt
-      if (p.characterId) next.createdCharacterId = p.characterId
-      if (p.portraitCdnUrl) {
-        next.portraitUrl = p.portraitCdnUrl
-        next.portraitCdnUrl = p.portraitCdnUrl
+      if (
+        p.characterId &&
+        (!cur.createdCharacterId || cur.createdCharacterId === charId)
+      ) {
+        next.createdCharacterId = p.characterId
       }
-      if (p.coverAssetId) next.motionInputAssetId = p.coverAssetId
+      if (p.portraitJobId) next.portraitJobId = p.portraitJobId
       if (p.motionPrompt) next.motionPrompt = p.motionPrompt
       if (p.videoAssetId) next.motionOutputAssetId = p.videoAssetId
       if (p.videoCdnUrl) next.motionPreviewUrl = p.videoCdnUrl
       if (p.listingId) next.listingId = p.listingId
+      if (
+        p.coverAssetId &&
+        charId &&
+        (cur.createdCharacterId === charId || p.characterId === charId || !cur.createdCharacterId)
+      ) {
+        next.motionInputAssetId = p.coverAssetId
+      }
       if (Object.keys(next).length) patchSlot(slotId, next)
 
-      const nameFromPayload =
-        typeof p.payload?.display_name === 'string' ? String(p.payload.display_name) : undefined
-      if (p.portraitCdnUrl) void ensurePortraitDownloaded(p.portraitCdnUrl, slotId, nameFromPayload)
-      if (p.videoCdnUrl) void ensurePlayableVideoUrl(p.videoCdnUrl, slotId)
+      if (p.portraitCdnUrl && charId) {
+        const st = useCreateCharStore.getState().slots[slotId]
+        if (slotAcceptsPortrait(st, charId)) {
+          applyPortraitUpdate(
+            slotId,
+            charId,
+            { portraitUrl: p.portraitCdnUrl, portraitCdnUrl: p.portraitCdnUrl },
+            runEpoch,
+          )
+        }
+      }
+
+      // 全自动素材只在最终结果完成后统一下载并等待结果；避免 progress 与最终回调重复抓取。
 
       if (p.stage === 'portrait' && p.portraitCdnUrl) {
         pushStep(slotId, 'ok', `立绘已完成 · 继续生成视频`)
@@ -543,28 +804,48 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         pushStep(slotId, 'err', '视频/发布阶段失败（见下方结果）')
       }
     })
-  }, [patchSlot, setToast, ensurePlayableVideoUrl, ensurePortraitDownloaded, pushStep])
+  }, [patchSlot, setToast, ensurePlayableVideoUrl, ensurePortraitDownloaded, pushStep, applyPortraitUpdate])
 
   const saveRelay = async () => {
     const savePatch: {
       teamoApiBase: string
       teamoModel: string
       teamoApiKey?: string
+      adminSessionToken?: string
+      downloadsDir?: string
     } = {
       teamoApiBase: teamoBase.trim(),
       teamoModel: teamoModel.trim() || 'gpt-5.4-mini',
     }
     if (teamoKeyInput.trim()) savePatch.teamoApiKey = teamoKeyInput.trim()
-    // 不拿下拉 Hotmail 覆盖本机管理员 Bearer（Lumi Vale 走浏览器 Token）
+    if (adminTokenInput.trim()) savePatch.adminSessionToken = adminTokenInput.trim()
+    if (downloadsDir.trim()) savePatch.downloadsDir = downloadsDir.trim()
     const cfg = await window.lovemi?.createCharSaveConfig?.(savePatch)
     if (cfg) {
       patch({
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
+        downloadsDir: cfg.downloadsDir || '',
         teamoKeyInput: '',
+        adminTokenInput: '',
       })
-      setToast('中转站配置已保存（管理员 Bearer 单独保留）')
+      setToast(
+        cfg.hasAdminToken
+          ? '配置已保存（管理员 Bearer 已加密写入本机）'
+          : '中转站已保存 · 请再填写管理员 Bearer',
+      )
     }
+  }
+
+  const pickDownloadsDir = async () => {
+    const res = await window.lovemi?.createCharPickDownloadsDir?.()
+    if (!res) {
+      setToast('请在 Electron 桌面窗口操作')
+      return
+    }
+    if (!res.ok) return
+    patch({ downloadsDir: res.downloadsDir || '' })
+    setToast(`推特资源将保存到：${res.downloadsDir}/推特资源`)
   }
 
   const onAnalyze = async () => {
@@ -580,13 +861,20 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     const img = imageBase64
     const mime = mimeType
     const hint = userHint.trim() || undefined
+    const preflightEpoch = draftEpoch
     await saveRelay()
     const outbound = await resolveProxyUrl()
     if (!outbound.proxyUrl) {
       setToast(outbound.error || '无代理')
       return
     }
-    patchSlot(slot, { busy: 'analyze', lastResult: '', portraitUrl: null })
+    const beforeStart = useCreateCharStore.getState().slots[slot]
+    if (beforeStart.draftEpoch !== preflightEpoch || beforeStart.imageBase64 !== img) {
+      setToast(`槽${slot}：准备期间参考图已更换，本次分析已取消`)
+      return
+    }
+    const analyzeEpoch = beginSlotRun(slot, true)
+    patchSlot(slot, { busy: 'analyze', lastResult: '', payloadText: '' })
     pushStep(slot, 'run', '开始分析参考图…')
     try {
       const res = await window.lovemi.createCharAnalyze({
@@ -595,6 +883,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         proxyUrl: outbound.proxyUrl,
         userHint: hint,
       })
+      if (useCreateCharStore.getState().slots[slot].draftEpoch !== analyzeEpoch) return
       if (!res.ok || !res.payload || !Object.keys(res.payload).length) {
         const detail = res.error || '分析失败'
         pushStep(slot, 'err', `分析失败 · ${detail}`)
@@ -619,7 +908,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(`槽${slot}：分析异常：${msg}`)
       patchSlot(slot, { lastResult: msg })
     } finally {
-      patchSlot(slot, { busy: 'idle' })
+      if (useCreateCharStore.getState().slots[slot].draftEpoch === analyzeEpoch) {
+        patchSlot(slot, { busy: 'idle' })
+      }
     }
   }
 
@@ -633,30 +924,41 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     }
     const slot = activeSlot
     const want = wantPortrait
+    const preflightEpoch = draftEpoch
+    const payloadAtStart = payloadText
     await saveRelay()
     const outbound = await resolveProxyUrl()
     if (!outbound.proxyUrl) {
       setToast(outbound.error || '无代理')
       return
     }
-    if (!admin?.lovemiSessionToken && !hasAdminToken) {
-      setToast('请选择管理员账号，或先保存浏览器 Bearer')
+    if (!hasAdminToken && !adminTokenInput.trim()) {
+      setToast('请先填写并保存管理员 Bearer')
       return
     }
+    const beforeStart = useCreateCharStore.getState().slots[slot]
+    if (
+      beforeStart.draftEpoch !== preflightEpoch ||
+      beforeStart.payloadText !== payloadAtStart
+    ) {
+      setToast(`槽${slot}：准备期间草稿已更换，本次创建已取消`)
+      return
+    }
+    beginSlotRun(slot, true)
+    const runEpoch = useCreateCharStore.getState().slots[slot].draftEpoch
     patchSlot(slot, {
       busy: 'create',
       waitStartedAt: Date.now(),
       waitKind: 'portrait',
-      portraitUrl: null,
-      portraitCdnUrl: null,
     })
     try {
       const res = await window.lovemi!.createCharCreate({
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         body,
         waitPortrait: false,
       })
+      if (useCreateCharStore.getState().slots[slot].draftEpoch !== runEpoch) return
       if (!res.ok) {
         setToast(`槽${slot}：${res.error || '创建失败'}`)
         patchSlot(slot, { lastResult: res.error || '创建失败' })
@@ -668,7 +970,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         patchSlot(slot, { lastResult: formatCompactResult(res) })
         return
       }
-      // 立刻写入角色 ID，立绘区可开始 2s 快刷
+      // 仅当前 epoch 可绑定角色 ID；旧创建结果不得写入新草稿。
       patchSlot(slot, {
         createdCharacterId: id,
         busy: want ? 'portrait' : 'idle',
@@ -684,10 +986,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         pushStep(slot, 'run', '等待 Lovemi 立绘生成…')
         const waited = await window.lovemi.createCharWaitPortrait({
           characterId: id,
-          sessionToken: admin?.lovemiSessionToken,
+          sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
           proxyUrl: outbound.proxyUrl,
           forceRestart: false,
         })
+        if (useCreateCharStore.getState().slots[slot].draftEpoch !== runEpoch) return
         if (waited.ok) {
           portrait = {
             cdnUrl: waited.cdnUrl,
@@ -707,17 +1010,12 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       const next: {
         lastResult: string
         portraitJobId?: string
-        portraitUrl?: string
-        portraitCdnUrl?: string
         motionInputAssetId?: string
       } = { lastResult: '' }
       if (portrait?.jobId) next.portraitJobId = portrait.jobId
       const cdn = portrait?.cdnUrl
-      const preview = cdn || portrait?.imageDataUrl
-      if (preview) next.portraitUrl = preview
-      if (cdn) next.portraitCdnUrl = cdn
       if (portrait?.assetId) next.motionInputAssetId = portrait.assetId
-      const portraitOk = Boolean(preview)
+      const portraitOk = Boolean(cdn || portrait?.imageDataUrl)
       if (want && portraitOk) {
         pushStep(slot, 'ok', '立绘已完成')
         setToast(`槽${slot}：角色+立绘都成功`)
@@ -732,8 +1030,89 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           assetId: portrait?.assetId,
         },
       })
+      const curAfter = useCreateCharStore.getState().slots[slot]
+      if (curAfter.draftEpoch !== runEpoch) {
+        pushStep(slot, 'err', '创建结果已作废（该槽已贴新图）')
+        return
+      }
+      patchSlot(slot, { ...next, createdCharacterId: id })
+      if (cdn) {
+        applyPortraitUpdate(slot, id, { portraitUrl: cdn, portraitCdnUrl: cdn }, runEpoch)
+        void ensurePortraitDownloaded(cdn, slot, undefined, id, runEpoch)
+      } else if (portrait?.imageDataUrl) {
+        applyPortraitUpdate(
+          slot,
+          id,
+          { portraitUrl: portrait.imageDataUrl, portraitCdnUrl: cdn || '' },
+          runEpoch,
+        )
+      }
+    } finally {
+      if (useCreateCharStore.getState().slots[slot].draftEpoch === runEpoch) {
+        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      }
+    }
+  }
+
+  const onRestartPortrait = async () => {
+    if (!createdCharacterId) {
+      setToast('先创建角色')
+      return
+    }
+    if (!window.lovemi?.createCharWaitPortrait) {
+      setToast('请在 Electron 桌面窗口操作')
+      return
+    }
+    const slot = activeSlot
+    const charId = createdCharacterId
+    const epochAtStart = draftEpoch
+    await saveRelay()
+    const outbound = await resolveProxyUrl()
+    if (!outbound.proxyUrl) {
+      setToast(outbound.error || '无代理')
+      return
+    }
+    patchSlot(slot, {
+      busy: 'portrait',
+      waitStartedAt: Date.now(),
+      waitKind: 'portrait',
+      portraitUrl: null,
+      portraitCdnUrl: null,
+      portraitCharacterId: '',
+    })
+    pushStep(slot, 'run', '重新触发 Lovemi 生图…')
+    try {
+      const waited = await window.lovemi.createCharWaitPortrait({
+        characterId: charId,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
+        proxyUrl: outbound.proxyUrl,
+        forceRestart: true,
+      })
+      const epoch = useCreateCharStore.getState().slots[slot].draftEpoch
+      if (epoch !== epochAtStart) {
+        pushStep(slot, 'err', '重新生图结果已作废（该槽已贴新图）')
+        return
+      }
+      const next: Parameters<typeof patchSlot>[1] = {
+        lastResult: formatCompactResult({ portrait: waited }),
+      }
+      if (waited.jobId) next.portraitJobId = waited.jobId
+      if (waited.assetId) next.motionInputAssetId = waited.assetId
       patchSlot(slot, next)
-      if (cdn) void ensurePortraitDownloaded(cdn, slot)
+      if (waited.ok && waited.cdnUrl) {
+        applyPortraitUpdate(
+          slot,
+          charId,
+          { portraitUrl: waited.cdnUrl, portraitCdnUrl: waited.cdnUrl },
+          epoch,
+        )
+        pushStep(slot, 'ok', '立绘已重新生成')
+        setToast(`槽${slot}：立绘已就绪`)
+        void ensurePortraitDownloaded(waited.cdnUrl, slot, undefined, charId, epoch)
+      } else {
+        pushStep(slot, 'err', `重新生图失败 · ${waited.error || '超时'}`)
+        setToast(`槽${slot}：${waited.error || '重新生图失败'}`, 12000)
+      }
     } finally {
       patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
     }
@@ -750,13 +1129,29 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       return
     }
     const slot = activeSlot
-    const snap = { ...useCreateCharStore.getState().slots[slot] }
+    const preflight = useCreateCharStore.getState().slots[slot]
+    const preflightEpoch = preflight.draftEpoch
+    const preflightImage = preflight.imageBase64
     await saveRelay()
     const outbound = await resolveProxyUrl()
     if (!outbound.proxyUrl) {
       setToast(outbound.error || '无代理')
       return
     }
+    if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+      setToast(`槽${slot}：准备期间角色已变更，本次视频任务已取消`)
+      return
+    }
+    const currentBeforeQueue = useCreateCharStore.getState().slots[slot]
+    if (
+      currentBeforeQueue.draftEpoch !== preflightEpoch ||
+      currentBeforeQueue.imageBase64 !== preflightImage ||
+      !currentBeforeQueue.imageBase64
+    ) {
+      setToast(`槽${slot}：准备期间参考图已更换，请重新点全自动`)
+      return
+    }
+    const snap = { ...currentBeforeQueue }
     let payload: Record<string, unknown> | undefined
     try {
       payload = JSON.parse(snap.payloadText || '{}') as Record<string, unknown>
@@ -773,7 +1168,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     try {
       const res = await window.lovemi.createCharGenerateMotionOnly({
         characterId: snap.createdCharacterId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         portraitCdnUrl: snap.portraitUrl?.startsWith('http') ? snap.portraitUrl : undefined,
         imageBase64: snap.imageBase64 || undefined,
@@ -784,6 +1179,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           ? payload!.appearance_tags.map(String).slice(0, 12).join('；')
           : '',
       })
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
       const upd: Parameters<typeof patchSlot>[1] = {
         lastResult: formatCompactResult(res),
       }
@@ -800,7 +1196,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       pushStep(slot, 'ok', `动态视频已完成${res.videoAssetId ? ` · ${res.videoAssetId}` : ''}`)
       setToast(`槽${slot}：视频已生成 · 预览后点「确认该视频发布」`)
     } finally {
-      patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      }
     }
   }
 
@@ -846,6 +1244,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(outbound.error || '无代理')
       return
     }
+    if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+      setToast(`槽${slot}：准备期间角色已变更，本次发布已取消`)
+      return
+    }
     if (!window.lovemi?.createCharSetPreviewPublish) {
       setToast('请在 Electron 桌面窗口操作')
       return
@@ -859,7 +1261,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     try {
       const res = await window.lovemi.createCharSetPreviewPublish({
         characterId: snap.createdCharacterId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         coverAssetId: cover,
         videoAssetId: snap.motionOutputAssetId || undefined,
@@ -868,6 +1270,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         publish: alsoPublish,
         // 不传槽内残留 listingId，由主进程按本角色草稿解析，防串台
       })
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
       patchSlot(slot, { listingId: res.listingId || '' })
       if (!res.ok) {
         pushStep(slot, 'err', `设预览/发布失败 · ${res.error || ''}`)
@@ -895,7 +1298,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         lastResult: formatCompactResult(res),
       })
     } finally {
-      patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      }
     }
   }
 
@@ -914,6 +1319,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     const outbound = await resolveProxyUrl()
     if (!outbound.proxyUrl) {
       setToast(outbound.error || '无代理')
+      return
+    }
+    if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+      setToast(`槽${slot}：准备期间角色已变更，本次自动发布已取消`)
       return
     }
     let payload: Record<string, unknown> | undefined
@@ -936,7 +1345,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           : undefined
       const res = await window.lovemi.createCharAutoVideoPublish({
         characterId: snap.createdCharacterId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         portraitCdnUrl: portraitCdn,
         // 不要把参考图当立绘喂给 Teamo；没有 CDN 时让主进程自己 resolve
@@ -948,6 +1357,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         payload,
         motionPromptOverride,
       })
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
       const upd: Parameters<typeof patchSlot>[1] = {
         lastResult: formatCompactResult(res),
         publishResult: formatCompactResult(res),
@@ -977,7 +1387,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         16000,
       )
     } finally {
-      patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      }
     }
   }
 
@@ -998,21 +1410,35 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(outbound.error || '无代理')
       return
     }
+    const st = useCreateCharStore.getState()
+    if (!st.hasAdminToken && !st.adminTokenInput.trim()) {
+      setToast('请先填写并保存管理员 Bearer')
+      return
+    }
+    const runId = crypto.randomUUID()
     patchSlot(slot, {
       busy: 'auto',
-      waitStartedAt: Date.now(),
+      queueStatus: 'queued',
+      queuePosition: 1,
+      runId,
+      runStartedAt: null,
+      waitStartedAt: null,
       waitKind: 'publish',
       lastResult: '',
+      draftEpoch: runEpoch,
     })
-    pushStep(slot, 'run', '开始全自动到发布…')
+    pushStep(slot, 'run', '已加入全自动队列 · 等待前序角色完成')
+    const epochAtStart = runEpoch
     try {
       const res = await window.lovemi.createCharFullAutoPublish({
         imageBase64: snap.imageBase64!,
         mimeType: snap.mimeType,
         proxyUrl: outbound.proxyUrl,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         userHint: snap.userHint.trim() || undefined,
         clientSlot: slot,
+        clientRunEpoch: runEpoch,
+        clientRunId: runId,
       })
       const upd: Parameters<typeof patchSlot>[1] = {
         lastResult: formatCompactResult(res),
@@ -1021,17 +1447,57 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       if (res.payload) upd.payloadText = JSON.stringify(res.payload, null, 2)
       if (res.portraitPrompt) upd.portraitPrompt = res.portraitPrompt
       if (res.characterId) upd.createdCharacterId = res.characterId
-      if (res.portraitCdnUrl) upd.portraitUrl = res.portraitCdnUrl
+      if (res.portraitJobId) upd.portraitJobId = res.portraitJobId
       if (res.motionPrompt) upd.motionPrompt = res.motionPrompt
       if (res.coverAssetId) upd.motionInputAssetId = res.coverAssetId
       if (res.videoAssetId) upd.motionOutputAssetId = res.videoAssetId
+      if (res.videoCdnUrl) upd.motionPreviewUrl = res.videoCdnUrl
       if (res.listingId) upd.listingId = res.listingId
+      const curAfter = useCreateCharStore.getState().slots[slot]
+      if (curAfter.draftEpoch !== epochAtStart || curAfter.runId !== runId) {
+        pushStep(slot, 'err', '全自动结果已作废（该槽已贴新图）')
+        setToast(`槽${slot}：任务期间已换新参考图，此结果已忽略`, 12000)
+        return
+      }
       patchSlot(slot, upd)
-      if (res.portraitCdnUrl) void ensurePortraitDownloaded(res.portraitCdnUrl, slot)
-      if (res.videoCdnUrl) void ensurePlayableVideoUrl(res.videoCdnUrl, slot)
+      let portraitSaved = false
+      let videoSaved = false
+      if (res.portraitCdnUrl && res.characterId) {
+        applyPortraitUpdate(
+          slot,
+          res.characterId,
+          { portraitUrl: res.portraitCdnUrl, portraitCdnUrl: res.portraitCdnUrl },
+          epochAtStart,
+        )
+        portraitSaved = await ensurePortraitDownloaded(
+          res.portraitCdnUrl,
+          slot,
+          undefined,
+          res.characterId,
+          epochAtStart,
+          res.coverAssetId,
+          runId,
+        )
+      }
+      if (res.videoCdnUrl) {
+        videoSaved = await ensurePlayableVideoUrl(res.videoCdnUrl, slot, res.videoAssetId, runId)
+      }
       if (!res.ok) {
+        if (res.cancelled) return
+        if (res.characterId && !res.portraitCdnUrl) {
+          pushStep(slot, 'run', `角色已在 · 生图未出，可点「重新生图」或稍后再试`)
+        }
         pushStep(slot, 'err', `全自动失败 · ${res.error || ''}`)
         setToast(`【槽${slot} 全自动失败】${res.error || '全自动发布失败'}`, 14000)
+        return
+      }
+      if (!portraitSaved || !videoSaved) {
+        const missing = [!portraitSaved && '立绘下载', !videoSaved && '视频下载'].filter(Boolean).join('、')
+        pushStep(slot, 'err', `全自动素材未完整落盘 · ${missing}`)
+        setToast(`【槽${slot} 未完成】${missing}失败，未标记全自动成功`, 14000)
+        patchSlot(slot, {
+          lastResult: `${formatCompactResult(res)}\n\n素材落盘失败：${missing}`,
+        })
         return
       }
       pushStep(
@@ -1044,7 +1510,16 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         16000,
       )
     } finally {
-      patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      const current = useCreateCharStore.getState().slots[slot]
+      if (current.draftEpoch === epochAtStart && current.runId === runId) {
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          waitStartedAt: null,
+          waitKind: null,
+        })
+      }
     }
   }
 
@@ -1064,15 +1539,20 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(outbound.error || '无代理', 5000)
       return
     }
+    if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+      setToast(`槽${slot}：准备期间角色已变更，本次拉回已取消`)
+      return
+    }
     pushStep(slot, 'run', '拉回站内视频并提交发布…')
     patchSlot(slot, { busy: 'publish', waitStartedAt: Date.now(), waitKind: 'publish' })
     try {
       setToast(`槽${slot}：正在拉回站内视频…`, 4000)
       const pulled = await window.lovemi.createCharRefreshVideo({
         characterId: snap.createdCharacterId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
       })
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
       if (!pulled.ok || !pulled.videoAssetId) {
         pushStep(slot, 'err', `拉回失败 · ${pulled.error || '站内暂无视频'}`)
         setToast(`【槽${slot}】站内还没有视频可拉 · ${pulled.error || ''}`, 12000)
@@ -1086,7 +1566,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           if (!window.lovemi?.createCharRefreshPortrait) return ''
           const por = await window.lovemi.createCharRefreshPortrait({
             characterId: snap.createdCharacterId,
-            sessionToken: admin?.lovemiSessionToken,
+            sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
             proxyUrl: outbound.proxyUrl!,
           })
           return por.assetId || ''
@@ -1105,7 +1585,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       // 故意不传旧 listingId，避免三槽串台提交错 listing
       const pub = await window.lovemi.createCharSetPreviewPublish({
         characterId: snap.createdCharacterId,
-        sessionToken: admin?.lovemiSessionToken,
+        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         coverAssetId: cover,
         videoAssetId: pulled.videoAssetId,
@@ -1113,6 +1593,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         description,
         publish: true,
       })
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
       patchSlot(slot, {
         motionInputAssetId: cover,
         motionOutputAssetId: pulled.videoAssetId,
@@ -1137,7 +1618,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         18000,
       )
     } finally {
-      patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
+        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      }
     }
   }
 
@@ -1145,17 +1628,25 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     <section className="email-page create-char-page" ref={pageRef}>
       <h1 className="page-title">创建角色</h1>
       <p className="page-desc">
-        顶部切换 <strong>1 / 2 / 3</strong> 三槽并发（草稿与进度隔离，管理员认证共用）→{' '}
+        顶部切换 <strong>1 ~ 5</strong> 五槽排队（整条流水线严格串行，素材按角色校验）→{' '}
         <strong>Ctrl+V</strong> 粘贴参考图 → 分析 / 创建 / 视频 / 发布。图片/视频可点击放大。
       </p>
 
       <div className="settings-card" data-motion="card" style={{ marginBottom: 12 }}>
-        <div className="settings-card-head">工作槽（可同时跑 3 个）</div>
-        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-          {([1, 2, 3] as CreateCharSlotId[]).map((id) => {
+        <div className="settings-card-head">工作槽（可连续点击，严格排队运行）</div>
+        <div
+          className="toolbar"
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(90px, max-content))',
+            gap: 8,
+            alignItems: 'center',
+          }}
+        >
+          {CREATE_CHAR_SLOT_IDS.map((id) => {
             const s = slots[id]
             const selected = activeSlot === id
-            const running = s.waitStartedAt != null || s.busy !== 'idle'
+            const running = s.waitStartedAt != null || s.busy !== 'idle' || s.queueStatus !== 'idle'
             const elapsed = slotElapsedSec(s)
             return (
               <button
@@ -1182,7 +1673,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               </button>
             )
           })}
-          <span className="settings-hint" style={{ marginLeft: 4 }}>
+          <span className="settings-hint" style={{ marginLeft: 4, gridColumn: '1 / -1' }}>
             当前槽 {activeSlot}
             {busy !== 'idle' ? ` · ${busy}` : ''}
             {createdCharacterId ? ` · ${createdCharacterId.slice(0, 14)}…` : ''}
@@ -1190,9 +1681,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         </div>
         {anySlotWaiting ? (
           <div className="settings-hint" style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {([1, 2, 3] as CreateCharSlotId[]).map((id) => {
+            {CREATE_CHAR_SLOT_IDS.map((id) => {
               const s = slots[id]
-              if (s.waitStartedAt == null) return null
+              if (s.waitStartedAt == null && s.queueStatus === 'idle') return null
               return (
                 <span
                   key={`wait-${id}`}
@@ -1205,12 +1696,16 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                   }}
                 >
                   槽{id}{' '}
-                  {s.waitKind === 'publish' || s.busy === 'auto'
+                  {s.queueStatus === 'queued'
+                    ? `排队第 ${s.queuePosition || 1} 位`
+                    : s.waitKind === 'publish' || s.busy === 'auto'
                     ? '到发布'
                     : s.waitKind === 'motion' || s.busy === 'motion'
                       ? '视频'
                       : '立绘'}{' '}
-                  {formatClock(slotElapsedSec(s))}/{formatClock(slotWaitMaxSec(s))}
+                  {s.queueStatus === 'queued'
+                    ? ''
+                    : `${formatClock(slotElapsedSec(s))}/${formatClock(slotWaitMaxSec(s))}`}
                 </span>
               )
             })}
@@ -1250,7 +1745,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         )}
         <div className="settings-hint" style={{ marginTop: 8 }}>
           其它槽最近一步：{' '}
-          {([1, 2, 3] as CreateCharSlotId[]).map((id) => {
+          {CREATE_CHAR_SLOT_IDS.map((id) => {
             const last = slots[id].stepLog?.[slots[id].stepLog.length - 1]
             if (!last) return null
             return (
@@ -1264,24 +1759,19 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       </div>
 
       <div className="settings-card" data-motion="card" style={{ marginBottom: 12 }}>
-        <div className="settings-card-head">管理员 & 中转站（三槽共用）</div>
+        <div className="settings-card-head">管理员 Bearer & 中转站（五槽共用）</div>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10 }}>
           <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            备用库存号
-            <select
+            管理员 Bearer {hasAdminToken ? '（已保存）' : ''}
+            <input
               className="field"
-              style={{ minWidth: 220 }}
-              value={adminId}
-              onChange={(e) => patch({ adminId: e.target.value })}
-            >
-              {!withToken.length ? <option value="">无可用 Bearer</option> : null}
-              {withToken.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.lovemiDisplayName || a.email.split('@')[0]}
-                  {a.lovemiDisplayName ? ` · ${a.email.split('@')[0]}` : ''}
-                </option>
-              ))}
-            </select>
+              style={{ minWidth: 280 }}
+              type="password"
+              autoComplete="off"
+              placeholder={hasAdminToken ? '留空则沿用已保存 · 可粘贴 Bearer xxx' : '粘贴自己账号的 Bearer'}
+              value={adminTokenInput}
+              onChange={(e) => patch({ adminTokenInput: e.target.value })}
+            />
           </label>
           <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             模型
@@ -1322,14 +1812,43 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             创建后等 Lovemi 立绘
           </label>
           <button type="button" className="btn" onClick={() => void saveRelay()}>
-            保存中转站配置
+            保存配置
           </button>
         </div>
+        <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+          <span className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}>
+            下载目录
+            <code
+              className="field"
+              style={{
+                minWidth: 280,
+                maxWidth: 520,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                display: 'inline-block',
+                padding: '6px 10px',
+              }}
+              title={
+                downloadsDir
+                  ? `${downloadsDir}/推特资源`
+                  : '默认：系统 Downloads/推特资源'
+              }
+            >
+              {downloadsDir
+                ? `${downloadsDir}/推特资源`
+                : '默认 · 系统 Downloads/推特资源'}
+            </code>
+            <button type="button" className="btn btn-ghost" onClick={() => void pickDownloadsDir()}>
+              选择文件夹
+            </button>
+          </span>
+        </div>
         <div className="settings-hint" style={{ marginTop: 8 }}>
-          创建归属：{hasAdminToken ? '本机加密保存的管理员 Bearer（应对应为 Lumi Vale）' : '尚未保存管理员 Token'}
+          创建归属：{hasAdminToken ? '本机加密保存的管理员 Bearer' : '尚未保存管理员 Bearer'}
           {' · '}
           {hasApiKey ? 'API Key OK' : '请填写 API Key'}
-          。角色会出现在该 Bearer 对应账号的「我的角色」里，不是 Hotmail 库存号。
+          。立绘/视频会写入所选目录下的「推特资源」。
         </div>
       </div>
 
@@ -1394,20 +1913,27 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               background: 'var(--panel-2, transparent)',
             }}
           >
-            {portraitUrl ? (
+            {showPortraitUrl ? (
               <img
-                key={`portrait-${activeSlot}-${createdCharacterId}-${portraitUrl}`}
-                src={portraitUrl}
+                key={`portrait-${activeSlot}-${createdCharacterId}-${portraitCharacterId}-${showPortraitUrl}`}
+                src={showPortraitUrl}
                 alt="portrait"
-                onClick={() => setLightbox({ src: portraitUrl, kind: 'image' })}
+                onClick={() => setLightbox({ src: showPortraitUrl, kind: 'image' })}
                 onError={() => {
                   const cdn =
                     (portraitCdnUrl?.startsWith('http') && portraitCdnUrl) ||
-                    (portraitUrl.startsWith('http') && portraitUrl) ||
+                    (showPortraitUrl.startsWith('http') && showPortraitUrl) ||
                     null
                   if (!cdn) return
-                  portraitSaveTried.current.delete(`${activeSlot}:${cdn}`)
-                  void ensurePortraitDownloaded(cdn, activeSlot)
+                  const retryKey = `${activeSlot}:${draftEpoch}:${createdCharacterId}:${cdn}`
+                  portraitSaveTried.current.delete(retryKey)
+                  void ensurePortraitDownloaded(
+                    cdn,
+                    activeSlot,
+                    undefined,
+                    createdCharacterId || undefined,
+                    draftEpoch,
+                  )
                 }}
                 title="点击放大"
                 style={{
@@ -1451,7 +1977,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy !== 'idle' || !imageBase64}
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !imageBase64}
               onClick={() => void onAnalyze()}
             >
               {busy === 'analyze' ? '分析中…' : '分析生成参数'}
@@ -1459,7 +1985,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || !payloadText}
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !payloadText}
               onClick={() => void onCreate()}
             >
               {busy === 'create' ? (wantPortrait ? '创建并等待立绘…' : '创建中…') : '创建到 Lovemi'}
@@ -1467,7 +1993,16 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || !createdCharacterId}
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
+              onClick={() => void onRestartPortrait()}
+              title="Lovemi 生图 job 失败或超时时，强制重新触发生图"
+            >
+              {busy === 'portrait' ? '重新生图中…' : '重新生图'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
               onClick={() => void onGenerateMotionOnly()}
               title="Teamo 诱惑向提示词 → companion 生 5s 视频（需再点确认发布）"
             >
@@ -1477,7 +2012,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               type="button"
               className="btn btn-primary"
               disabled={
-                busy !== 'idle' || !createdCharacterId || !motionOutputAssetId || !motionInputAssetId
+                busy !== 'idle' ||
+                fullAutoQueueBusy ||
+                !createdCharacterId ||
+                !motionOutputAssetId ||
+                !motionInputAssetId
               }
               onClick={() => void onSetPreview(true)}
               title="把当前视频绑到 presentation 并提交发布"
@@ -1487,7 +2026,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || !createdCharacterId}
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
               onClick={() => void onAutoVideoPublish()}
               title="Teamo → 视频 → 绑动态图 → 发布（一条龙）"
             >
@@ -1496,7 +2035,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn ghost"
-              disabled={busy !== 'idle' || !createdCharacterId}
+              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
               onClick={() => void onPullSiteVideoAndPublish()}
               title="站内已有视频但还是草稿时：拉回视频 → 绑动态图 → 提交发布"
             >
@@ -1506,11 +2045,15 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               type="button"
               className="btn"
               style={{ fontSize: 12, opacity: 0.95 }}
-              disabled={busy !== 'idle' || !imageBase64}
+              disabled={busy !== 'idle' || manualOperationBusy || !imageBase64}
               onClick={() => void onFullAutoPublish()}
               title="参考图+提示词 → JSON → 立绘 → 视频 → 绑定 → 发布"
             >
-              {busy === 'auto' ? '全自动进行中…' : '全自动到发布'}
+              {queueStatus === 'queued'
+                ? `排队中（第 ${queuePosition || 1} 位）`
+                : queueStatus === 'running'
+                  ? '全自动进行中…'
+                  : '全自动到发布'}
             </button>
           </div>
           {createdCharacterId ? (
@@ -1566,14 +2109,20 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                   controls
                   playsInline
                   preload="metadata"
-                  onClick={() => setLightbox({ src: motionPreviewUrl, kind: 'video' })}
-                  title="点击放大"
+                  onDoubleClick={() => setLightbox({ src: motionPreviewUrl, kind: 'video' })}
+                  onError={() => {
+                    if (motionPreviewUrl.startsWith('http')) {
+                      videoCacheTried.current.delete(`${activeSlot}:${motionPreviewUrl}`)
+                      void ensurePlayableVideoUrl(motionPreviewUrl, activeSlot)
+                    }
+                  }}
+                  title="双击放大"
                   style={{
                     maxWidth: '100%',
                     maxHeight: 360,
                     borderRadius: 8,
                     marginTop: 8,
-                    cursor: 'zoom-in',
+                    cursor: 'default',
                     background: '#000',
                   }}
                 />

@@ -230,6 +230,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       hasAdminToken: boolean
       adminEmailLocal: string
       adminAccountId: string
+      downloadsDir: string
     }>,
   createCharSaveConfig: (input: {
     teamoApiBase?: string
@@ -238,6 +239,7 @@ contextBridge.exposeInMainWorld('lovemi', {
     adminSessionToken?: string
     adminEmailLocal?: string
     adminAccountId?: string
+    downloadsDir?: string
   }) =>
     ipcRenderer.invoke('createChar:saveConfig', input) as Promise<{
       teamoApiBase: string
@@ -246,6 +248,19 @@ contextBridge.exposeInMainWorld('lovemi', {
       hasAdminToken: boolean
       adminEmailLocal: string
       adminAccountId: string
+      downloadsDir: string
+    }>,
+  createCharPickDownloadsDir: () =>
+    ipcRenderer.invoke('createChar:pickDownloadsDir') as Promise<{
+      ok: boolean
+      teamoApiBase: string
+      teamoModel: string
+      hasApiKey: boolean
+      hasAdminToken: boolean
+      adminEmailLocal: string
+      adminAccountId: string
+      downloadsDir: string
+      defaultDownloadsDir: string
     }>,
   createCharAnalyze: (input: {
     imageBase64: string
@@ -401,7 +416,9 @@ contextBridge.exposeInMainWorld('lovemi', {
     proxyUrl?: string
     sessionToken?: string
     userHint?: string
-    clientSlot?: 1 | 2 | 3
+    clientSlot?: 1 | 2 | 3 | 4 | 5
+    clientRunEpoch?: number
+    clientRunId: string
   }) =>
     ipcRenderer.invoke('createChar:fullAutoPublish', input) as Promise<{
       ok: boolean
@@ -415,12 +432,27 @@ contextBridge.exposeInMainWorld('lovemi', {
       videoCdnUrl?: string
       listingId?: string
       portraitCdnUrl?: string
+      portraitJobId?: string
+      runId?: string
+      runStartedAt?: number
+      cancelled?: boolean
+    }>,
+  createCharCancelFullAuto: (input: { runId: string }) =>
+    ipcRenderer.invoke('createChar:cancelFullAuto', input) as Promise<{
+      ok: boolean
+      error?: string
     }>,
   onCreateCharProgress: (
     cb: (p: {
       stage: string
-      clientSlot?: 1 | 2 | 3
+      clientSlot?: 1 | 2 | 3 | 4 | 5
+      clientRunEpoch?: number
+      runId?: string
+      runStartedAt?: number
+      queuePosition?: number
+      error?: string
       characterId?: string
+      portraitJobId?: string
       portraitCdnUrl?: string
       coverAssetId?: string
       payload?: Record<string, unknown>
@@ -435,8 +467,14 @@ contextBridge.exposeInMainWorld('lovemi', {
       _e: unknown,
       p: {
         stage: string
-        clientSlot?: 1 | 2 | 3
+        clientSlot?: 1 | 2 | 3 | 4 | 5
+        clientRunEpoch?: number
+        runId?: string
+        runStartedAt?: number
+        queuePosition?: number
+        error?: string
         characterId?: string
+        portraitJobId?: string
         portraitCdnUrl?: string
         coverAssetId?: string
         payload?: Record<string, unknown>
@@ -457,6 +495,9 @@ contextBridge.exposeInMainWorld('lovemi', {
     proxyUrl?: string
     displayName?: string
     kind?: 'portrait' | 'video' | 'media'
+    characterId?: string
+    assetId?: string
+    runId?: string
   }) =>
     ipcRenderer.invoke('createChar:cacheMedia', input) as Promise<{
       ok: boolean

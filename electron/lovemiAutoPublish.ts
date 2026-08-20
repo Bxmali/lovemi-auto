@@ -13,7 +13,7 @@ import {
   resolvePortraitAssetId,
   waitLovemiPortrait,
 } from './lovemiCreateChar'
-import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemiCompanionVideo'
+import { requestCompanionMotionVideo } from './lovemiCompanionVideo'
 import { acceptVisualReference, setPreviewAndMaybePublish } from './lovemiPublish'
 
 const MOTION_PROMPT_SYSTEM = `你是成人向短视频导演，给 Lovemi companion 写**极简**中文催视频提示词。
@@ -88,7 +88,7 @@ export async function generateSeductiveMotionPrompt(input: {
       : '根据文字描述，写极简催视频词：很诱人，几乎静止，一个微动。',
     input.characterHint ? `角色：${input.characterHint}` : '',
     input.appearanceHint
-      ? `气质参考（勿写动作清单）：${input.appearanceHint.slice(0, 120)}`
+      ? `已核验外观锁（视频必须保持同一角色、朝向、发型、服装与表情）：${input.appearanceHint.slice(0, 600)}`
       : '',
     /东亚|中日韩|华裔|日系|韩系|萌妹|east.?asian/i.test(
       `${input.characterHint || ''} ${input.appearanceHint || ''}`,
@@ -312,6 +312,8 @@ export async function autoVideoAndPublish(input: {
   appearanceHint?: string
   payload?: Record<string, unknown>
   motionPromptOverride?: string
+  runStartedAt?: number
+  isCancelled?: () => boolean
 }): Promise<{
   ok: boolean
   error?: string
@@ -326,6 +328,7 @@ export async function autoVideoAndPublish(input: {
   const secrets = loadCreateCharSecrets()
   const token = secrets.adminSessionToken || input.sessionToken || ''
   if (!token) return { ok: false, error: '缺少管理员 Bearer' }
+  if (input.isCancelled?.()) return { ok: false, error: '任务已取消' }
 
   // cover asset：优先立绘 CDN；有现成 motion 提示词时可跳过下图
   let coverId = input.coverAssetId
@@ -342,6 +345,7 @@ export async function autoVideoAndPublish(input: {
     if (!portraitCdn && resolved.cdnUrl) portraitCdn = resolved.cdnUrl
   }
   if (!coverId) return { ok: false, error: '找不到立绘 asset_id（请先生成立绘）' }
+  if (input.isCancelled?.()) return { ok: false, error: '任务已取消', coverAssetId: coverId }
 
   // 1) Teamo motion prompt
   let motionPrompt = (input.motionPromptOverride || '').trim()
@@ -375,35 +379,28 @@ export async function autoVideoAndPublish(input: {
     prompt: motionPrompt,
     title: String(input.payload?.display_name || 'companion'),
     coverAssetId: coverId,
+    runStartedAt: input.runStartedAt,
+    shouldCancel: input.isCancelled,
   })
+  if (input.isCancelled?.()) {
+    return { ok: false, error: '任务已取消', motionPrompt, coverAssetId: coverId }
+  }
   let videoAssetId = video.videoAssetId
   let videoCdn = video.cdnUrl
   if (!video.ok || !videoAssetId) {
-    const salvage = await fetchLatestCharacterVideo({
-      characterId: input.characterId,
-      proxyUrl: input.proxyUrl,
-      sessionToken: token,
-    })
-    if (salvage.ok && salvage.videoAssetId) {
-      appendConsoleLog({
-        level: 'info',
-        action: 'create_char',
-        message: `自动视频：companion 报失败但站内已有视频，继续发布 · ${salvage.videoAssetId}`,
-      })
-      videoAssetId = salvage.videoAssetId
-      videoCdn = salvage.cdnUrl
-    } else {
-      return {
-        ok: false,
-        error: video.error || 'companion 视频失败',
-        motionPrompt,
-        coverAssetId: coverId,
-        labProjectId: video.labProjectId,
-      }
+    return {
+      ok: false,
+      error: video.error || 'companion 视频失败（未找到可确认属于本次运行的新视频）',
+      motionPrompt,
+      coverAssetId: coverId,
+      labProjectId: video.labProjectId,
     }
   }
 
   // 3) accept + presentation + draft + publish
+  if (input.isCancelled?.()) {
+    return { ok: false, error: '任务已取消', motionPrompt, coverAssetId: coverId, videoAssetId }
+  }
   await acceptVisualReference({
     characterId: input.characterId,
     assetId: coverId,
@@ -452,6 +449,112 @@ export async function autoVideoAndPublish(input: {
   }
 }
 
+/** 全自动流水线：多轮等立绘（job failed 时主进程内已自动重触发，这里再补外层轮次） */
+async function waitPortraitForFullAuto(input: {
+  characterId: string
+  sessionToken: string
+  proxyUrl: string
+  runStartedAt: number
+  shouldCancel?: () => boolean
+}): Promise<{
+  ok: boolean
+  error?: string
+  portraitCdnUrl?: string
+  coverAssetId?: string
+  portraitJobId?: string
+}> {
+  const shouldFailFast = (msg: string | undefined) =>
+    Boolean(
+      msg &&
+        /不可重试|PROMPT_COMPILATION_FAILED|INVALID_PROMPT|CONTENT_POLICY|MODERATION|SAFETY|终态无输出/i.test(
+          msg,
+        ),
+    )
+  const rounds = [
+    { timeoutMs: 720_000, forceRestart: false },
+    { timeoutMs: 480_000, forceRestart: true },
+    { timeoutMs: 480_000, forceRestart: true },
+  ]
+  let lastError = ''
+  let portraitCdnUrl: string | undefined
+  let coverAssetId: string | undefined
+  let portraitJobId: string | undefined
+
+  for (let round = 0; round < rounds.length; round++) {
+    if (input.shouldCancel?.()) return { ok: false, error: '任务已取消', portraitJobId }
+    const { timeoutMs, forceRestart } = rounds[round]
+    if (round > 0) {
+      appendConsoleLog({
+        level: 'warn',
+        action: 'create_char',
+        message: `全自动立绘补拉第 ${round + 1}/${rounds.length} 轮 · ${input.characterId.slice(0, 18)}`,
+      })
+    }
+    const waited = await waitLovemiPortrait({
+      characterId: input.characterId,
+      sessionToken: input.sessionToken,
+      proxyUrl: input.proxyUrl,
+      timeoutMs,
+      forceRestart,
+      shouldCancel: input.shouldCancel,
+    })
+    if (input.shouldCancel?.()) return { ok: false, error: '任务已取消', portraitJobId: waited.jobId }
+    lastError = waited.error || lastError
+    if (waited.jobId) portraitJobId = waited.jobId
+    if (!waited.ok && shouldFailFast(waited.error)) {
+      appendConsoleLog({
+        level: 'warn',
+        action: 'create_char',
+        message: `立绘快速失败终止 · ${input.characterId.slice(0, 18)} · ${waited.error || 'unknown'}`,
+      })
+      return {
+        ok: false,
+        error: waited.error || '立绘任务失败（快速终止）',
+        portraitJobId,
+      }
+    }
+    // wait 返回值只表示“看到图片”；最终必须按 job.outputs → 当前角色资产双重核验。
+    // 绝不直接信任 wait 从 job 根对象深挖出的 URL/asset，那里可能是输入图或其它旧资产。
+    const resolved = await resolvePortraitAssetId({
+      characterId: input.characterId,
+      sessionToken: input.sessionToken,
+      proxyUrl: input.proxyUrl,
+      jobId: waited.jobId,
+      minCreatedAt: input.runStartedAt,
+      retries: 20,
+    })
+    if (resolved.assetId && resolved.cdnUrl) {
+      coverAssetId = resolved.assetId
+      portraitCdnUrl = resolved.cdnUrl
+      appendConsoleLog({
+        level: 'info',
+        action: 'create_char',
+        message: `立绘归属校验通过 · ${input.characterId} · ${portraitJobId || 'no-job'} · ${coverAssetId} · ${portraitCdnUrl.slice(-48)}`,
+      })
+      return { ok: true, portraitCdnUrl, coverAssetId, portraitJobId }
+    }
+    lastError = resolved.error || lastError || '立绘输出尚未通过角色归属校验'
+    if (round < rounds.length - 1) continue
+  }
+
+  if (portraitCdnUrl) {
+    return {
+      ok: false,
+      error: lastError || '立绘已出但找不到 asset_id',
+      portraitCdnUrl,
+      coverAssetId,
+      portraitJobId,
+    }
+  }
+  return {
+    ok: false,
+    error: lastError || '立绘未就绪',
+    portraitCdnUrl,
+    coverAssetId,
+    portraitJobId,
+  }
+}
+
 /** 参考图 → 分析 JSON → 创建+立绘 → 视频+发布 */
 export async function fullAutoToPublish(input: {
   imageBase64: string
@@ -459,6 +562,9 @@ export async function fullAutoToPublish(input: {
   proxyUrl: string
   sessionToken?: string
   userHint?: string
+  runId: string
+  runStartedAt: number
+  isCancelled?: () => boolean
   onProgress?: (p: {
     stage: string
     characterId?: string
@@ -470,6 +576,7 @@ export async function fullAutoToPublish(input: {
     videoAssetId?: string
     videoCdnUrl?: string
     listingId?: string
+    portraitJobId?: string
   }) => void
 }): Promise<{
   ok: boolean
@@ -483,11 +590,14 @@ export async function fullAutoToPublish(input: {
   videoCdnUrl?: string
   listingId?: string
   portraitCdnUrl?: string
+  portraitJobId?: string
 }> {
   const secrets = loadCreateCharSecrets()
   const token = secrets.adminSessionToken || input.sessionToken || ''
   if (!token) return { ok: false, error: '缺少管理员 Bearer' }
   const progress = input.onProgress || (() => {})
+  const cancelled = () => input.isCancelled?.() === true
+  if (cancelled()) return { ok: false, error: '任务已取消' }
 
   progress({ stage: 'analyze' })
   const analyzed = await analyzeReferenceImage({
@@ -496,6 +606,7 @@ export async function fullAutoToPublish(input: {
     proxyUrl: input.proxyUrl,
     userHint: input.userHint,
   })
+  if (cancelled()) return { ok: false, error: '任务已取消' }
   if (!analyzed.ok || !analyzed.payload) {
     return { ok: false, error: analyzed.error || '分析失败' }
   }
@@ -506,6 +617,7 @@ export async function fullAutoToPublish(input: {
   })
 
   progress({ stage: 'create' })
+  if (cancelled()) return { ok: false, error: '任务已取消', payload: analyzed.payload }
   const created = await createLovemiCharacter({
     sessionToken: token,
     proxyUrl: input.proxyUrl,
@@ -529,6 +641,15 @@ export async function fullAutoToPublish(input: {
       characterId,
     }
   }
+  if (cancelled()) {
+    return {
+      ok: false,
+      error: '任务已取消（角色已创建，但未继续生成/发布）',
+      characterId,
+      payload: analyzed.payload,
+      portraitPrompt: analyzed.portraitPrompt,
+    }
+  }
 
   // 立刻回填角色 ID，前端可并行刷立绘（不必干等主进程）
   progress({
@@ -538,44 +659,35 @@ export async function fullAutoToPublish(input: {
     portraitPrompt: analyzed.portraitPrompt,
   })
 
-  const waited = await waitLovemiPortrait({
+  const portrait = await waitPortraitForFullAuto({
     characterId,
     sessionToken: token,
     proxyUrl: input.proxyUrl,
+    runStartedAt: input.runStartedAt,
+    shouldCancel: input.isCancelled,
   })
-
-  let portraitCdnUrl = waited.cdnUrl
-  let coverAssetId: string | undefined = waited.assetId
-  if (!portraitCdnUrl || !coverAssetId) {
-    const resolved = await resolvePortraitAssetId({
-      characterId,
-      sessionToken: token,
-      proxyUrl: input.proxyUrl,
-      jobId: waited.jobId,
-      retries: 8,
-    })
-    if (resolved.cdnUrl) portraitCdnUrl = portraitCdnUrl || resolved.cdnUrl
-    if (resolved.assetId) coverAssetId = coverAssetId || resolved.assetId
-  }
-  if (!waited.ok && !portraitCdnUrl) {
+  if (cancelled()) {
     return {
       ok: false,
-      error: waited.error || created.error || '立绘未就绪',
+      error: '任务已取消',
+      characterId,
+      payload: analyzed.payload,
+      portraitPrompt: analyzed.portraitPrompt,
+    }
+  }
+
+  const portraitCdnUrl = portrait.portraitCdnUrl
+  const coverAssetId = portrait.coverAssetId
+  if (!portrait.ok || !portraitCdnUrl || !coverAssetId) {
+    return {
+      ok: false,
+      error: portrait.error || '立绘未就绪',
       characterId,
       payload: analyzed.payload,
       portraitPrompt: analyzed.portraitPrompt,
       portraitCdnUrl,
       coverAssetId,
-    }
-  }
-  if (!coverAssetId) {
-    return {
-      ok: false,
-      error: '立绘已出但找不到 asset_id（无法设封面/催视频）。请稍后点「生成动态视频」重试，或打开站内该角色确认立绘已接受。',
-      characterId,
-      payload: analyzed.payload,
-      portraitPrompt: analyzed.portraitPrompt,
-      portraitCdnUrl,
+      portraitJobId: portrait.portraitJobId,
     }
   }
   progress({
@@ -583,12 +695,21 @@ export async function fullAutoToPublish(input: {
     characterId,
     portraitCdnUrl,
     coverAssetId,
+    portraitJobId: portrait.portraitJobId,
     payload: analyzed.payload,
     portraitPrompt: analyzed.portraitPrompt,
   })
 
   const appearanceHint = Array.isArray(analyzed.payload.appearance_tags)
-    ? analyzed.payload.appearance_tags.map(String).slice(0, 12).join('；')
+    ? analyzed.payload.appearance_tags
+        .map(String)
+        .filter((tag) =>
+          /^(人种|五官|发型|发质|发色|瞳色|朝向|惯用手|服装|配饰|姿势|表情|气质|脚):/.test(
+            tag,
+          ),
+        )
+        .slice(0, 18)
+        .join('；')
     : ''
 
   progress({ stage: 'video', characterId, portraitCdnUrl, coverAssetId })
@@ -602,6 +723,8 @@ export async function fullAutoToPublish(input: {
     characterHint: input.userHint || String(analyzed.payload.display_name || ''),
     appearanceHint,
     payload: analyzed.payload,
+    runStartedAt: input.runStartedAt,
+    isCancelled: input.isCancelled,
   })
 
   progress({
@@ -609,6 +732,7 @@ export async function fullAutoToPublish(input: {
     characterId,
     portraitCdnUrl,
     coverAssetId: rest.coverAssetId || coverAssetId,
+    portraitJobId: portrait.portraitJobId,
     motionPrompt: rest.motionPrompt,
     videoAssetId: rest.videoAssetId,
     videoCdnUrl: rest.cdnUrl,
@@ -629,5 +753,6 @@ export async function fullAutoToPublish(input: {
     videoCdnUrl: rest.cdnUrl,
     listingId: rest.listingId,
     portraitCdnUrl,
+    portraitJobId: portrait.portraitJobId,
   }
 }

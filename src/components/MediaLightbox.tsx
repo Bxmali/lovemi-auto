@@ -82,10 +82,14 @@ export function MediaLightbox({ src, kind = 'image', onClose }: Props) {
       >
         {kind === 'video' ? (
           <video
+            key={src}
             src={src}
             controls
             autoPlay
             playsInline
+            onLoadedData={(e) => {
+              void e.currentTarget.play().catch(() => {})
+            }}
             style={{ display: 'block', maxWidth: '96vw', maxHeight: '92vh' }}
           />
         ) : (

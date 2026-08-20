@@ -9,7 +9,8 @@ export type CreateCharBusy =
   | 'publish'
   | 'auto'
 
-export type CreateCharSlotId = 1 | 2 | 3
+export type CreateCharSlotId = 1 | 2 | 3 | 4 | 5
+export const CREATE_CHAR_SLOT_IDS: CreateCharSlotId[] = [1, 2, 3, 4, 5]
 
 export type CreateCharStepKind = 'ok' | 'err' | 'run'
 
@@ -44,12 +45,25 @@ export type CreateCharSlotDraft = {
   publishResult: string
   waitStartedAt: number | null
   waitKind: 'portrait' | 'motion' | 'publish' | null
+  /** 每次贴新图/新开任务 +1；异步回调必须对上 epoch 才能写立绘 */
+  draftEpoch: number
+  /** 当前立绘属于哪个 chr_；与 createdCharacterId 不一致则不展示 */
+  portraitCharacterId: string
+  /** 全自动严格串行队列状态（不持久化） */
+  queueStatus: 'idle' | 'queued' | 'running'
+  queuePosition: number
+  /** 每次全自动唯一运行 ID；进度、素材、下载都必须匹配 */
+  runId: string
+  runStartedAt: number | null
   /** 步骤完成清单（绿色长显，切槽不丢） */
   stepLog: CreateCharStep[]
 }
 
 type SharedFields = {
+  /** @deprecated 已改为手填 Bearer，保留字段避免旧 localStorage 炸掉 */
   adminId: string
+  adminTokenInput: string
+  downloadsDir: string
   teamoBase: string
   teamoModel: string
   teamoKeyInput: string
@@ -69,6 +83,8 @@ type CreateCharState = SharedFields & {
   clearStepLog: (slot?: CreateCharSlotId) => void
   setActiveSlot: (slot: CreateCharSlotId) => void
   resetDraft: () => void
+  /** 新贴图 / 新开流水线前调用，返回新 epoch */
+  bumpSlotEpoch: (slot: CreateCharSlotId) => number
 }
 
 const STORAGE_KEY = 'lovemi-auto-create-char-v2'
@@ -97,11 +113,19 @@ const SLOT_DEFAULTS: CreateCharSlotDraft = {
   publishResult: '',
   waitStartedAt: null,
   waitKind: null,
+  draftEpoch: 0,
+  portraitCharacterId: '',
+  queueStatus: 'idle',
+  queuePosition: 0,
+  runId: '',
+  runStartedAt: null,
   stepLog: [],
 }
 
 const SHARED_KEYS = new Set([
   'adminId',
+  'adminTokenInput',
+  'downloadsDir',
   'teamoBase',
   'teamoModel',
   'teamoKeyInput',
@@ -114,6 +138,8 @@ function emptySlots(): Record<CreateCharSlotId, CreateCharSlotDraft> {
     1: { ...SLOT_DEFAULTS },
     2: { ...SLOT_DEFAULTS },
     3: { ...SLOT_DEFAULTS },
+    4: { ...SLOT_DEFAULTS },
+    5: { ...SLOT_DEFAULTS },
   }
 }
 
@@ -148,18 +174,25 @@ function normalizeSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCha
   base.busy = 'idle'
   base.waitStartedAt = null
   base.waitKind = null
+  base.queueStatus = 'idle'
+  base.queuePosition = 0
+  base.runId = ''
+  base.runStartedAt = null
+  // 旧版可能把多槽 base64 写进 Local Storage（可达几十 MB）；启动时一律丢掉，避免 OOM。
+  base.imageBase64 = null
+  base.previewUrl = null
   const cdn = extractPortraitCdn(base)
   base.portraitCdnUrl = cdn
   base.portraitUrl = cdn
-  if (base.imageBase64) {
-    const mime = base.mimeType || 'image/png'
-    base.previewUrl = `data:${mime};base64,${base.imageBase64}`
-  } else {
-    base.previewUrl = null
+  if (base.portraitUrl && base.createdCharacterId && !base.portraitCharacterId) {
+    base.portraitCharacterId = base.createdCharacterId
   }
   base.lastResult = scrubHugeText(base.lastResult)
   base.publishResult = scrubHugeText(base.publishResult)
-  base.motionPreviewUrl = base.motionPreviewUrl?.startsWith('http') ? base.motionPreviewUrl : null
+  base.motionPreviewUrl =
+    base.motionPreviewUrl?.startsWith('http') || base.motionPreviewUrl?.startsWith('lovemi-cache://')
+      ? base.motionPreviewUrl
+      : null
   base.stepLog = Array.isArray(base.stepLog)
     ? base.stepLog
         .filter((s) => s && typeof s.text === 'string')
@@ -172,6 +205,38 @@ function normalizeSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCha
         }))
     : []
   return base
+}
+
+function clearGeneratedResult(slot: CreateCharSlotDraft): CreateCharSlotDraft {
+  return {
+    ...slot,
+    portraitUrl: null,
+    portraitCdnUrl: null,
+    createdCharacterId: '',
+    portraitCharacterId: '',
+    portraitJobId: '',
+    motionJobId: '',
+    motionPreviewUrl: null,
+    motionInputAssetId: '',
+    motionOutputAssetId: '',
+    listingId: '',
+    publishResult: '',
+    lastResult: '已清除跨槽重复立绘，请重新点击全自动',
+    stepLog: [],
+  }
+}
+
+function clearCrossSlotDuplicatePortraits(slots: Record<CreateCharSlotId, CreateCharSlotDraft>) {
+  const byUrl = new Map<string, CreateCharSlotId[]>()
+  for (const id of CREATE_CHAR_SLOT_IDS) {
+    const url = slots[id].portraitCdnUrl
+    if (!url) continue
+    byUrl.set(url, [...(byUrl.get(url) || []), id])
+  }
+  for (const ids of byUrl.values()) {
+    if (ids.length < 2) continue
+    for (const id of ids) slots[id] = clearGeneratedResult(slots[id])
+  }
 }
 
 type PersistedV2 = {
@@ -189,11 +254,14 @@ function loadPersisted(): Partial<CreateCharState> {
     if (rawV2) {
       const data = JSON.parse(rawV2) as PersistedV2
       const slots = emptySlots()
-      for (const id of [1, 2, 3] as CreateCharSlotId[]) {
+      for (const id of CREATE_CHAR_SLOT_IDS) {
         slots[id] = normalizeSlot(data.slots?.[id])
       }
+      clearCrossSlotDuplicatePortraits(slots)
       return {
-        activeSlot: data.activeSlot === 2 || data.activeSlot === 3 ? data.activeSlot : 1,
+        activeSlot: CREATE_CHAR_SLOT_IDS.includes(data.activeSlot as CreateCharSlotId)
+          ? (data.activeSlot as CreateCharSlotId)
+          : 1,
         adminId: data.adminId || '',
         teamoBase: data.teamoBase || 'https://api.teamorouter.com/v1',
         teamoModel: data.teamoModel || 'gpt-5.4-mini',
@@ -229,7 +297,8 @@ function persistSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
     httpUrlOnly(s.portraitUrl) ||
     extractPortraitCdn(s)
   return {
-    imageBase64: s.imageBase64,
+    // 故意不持久化 imageBase64：5 槽各贴一张图会把 Local Storage 撑到几十 MB，渲染进程易 OOM 闪退。
+    // 参考图只留在内存；重启后需重新 Ctrl+V。
     mimeType: s.mimeType,
     payloadText: s.payloadText,
     portraitUrl: cdn,
@@ -237,9 +306,13 @@ function persistSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
     portraitPrompt: s.portraitPrompt,
     userHint: s.userHint,
     createdCharacterId: s.createdCharacterId,
+    portraitCharacterId: s.portraitCharacterId,
     portraitJobId: s.portraitJobId,
     motionJobId: s.motionJobId,
-    motionPreviewUrl: s.motionPreviewUrl?.startsWith('http') ? s.motionPreviewUrl : null,
+    motionPreviewUrl:
+      s.motionPreviewUrl?.startsWith('http') || s.motionPreviewUrl?.startsWith('lovemi-cache://')
+        ? s.motionPreviewUrl
+        : null,
     motionPrompt: s.motionPrompt,
     motionInputAssetId: s.motionInputAssetId,
     motionOutputAssetId: s.motionOutputAssetId,
@@ -247,7 +320,7 @@ function persistSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
     publishResult: scrubHugeText(s.publishResult),
     wantPortrait: s.wantPortrait,
     lastResult: scrubHugeText(s.lastResult),
-    // 不持久化 busy：Electron 崩溃/重启后任务不会续跑，避免假「跑着」
+    // 不持久化 busy / epoch / queue / runId：重启后旧异步结果一律作废
     stepLog: (s.stepLog || []).slice(-40),
   }
 }
@@ -264,15 +337,22 @@ function savePersisted(s: CreateCharState) {
         1: persistSlot(s.slots[1]),
         2: persistSlot(s.slots[2]),
         3: persistSlot(s.slots[3]),
+        4: persistSlot(s.slots[4]),
+        5: persistSlot(s.slots[5]),
       },
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
   } catch {
-    /* quota — 再试：丢掉各槽 imageBase64 */
+    /* quota — 再试：丢掉大字段 */
     try {
       const slim = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') as PersistedV2
-      for (const id of [1, 2, 3] as CreateCharSlotId[]) {
-        if (slim.slots?.[id]) delete slim.slots[id].imageBase64
+      for (const id of CREATE_CHAR_SLOT_IDS) {
+        if (slim.slots?.[id]) {
+          delete slim.slots[id].imageBase64
+          delete slim.slots[id].payloadText
+          delete slim.slots[id].lastResult
+          delete slim.slots[id].publishResult
+        }
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim))
     } catch {
@@ -307,6 +387,8 @@ const hydrated = loadPersisted()
 /** 三槽并发草稿 + 共享管理员/中转站配置 */
 export const useCreateCharStore = create<CreateCharState>((set, get) => ({
   adminId: '',
+  adminTokenInput: '',
+  downloadsDir: '',
   teamoBase: 'https://api.teamorouter.com/v1',
   teamoModel: 'gpt-5.4-mini',
   teamoKeyInput: '',
@@ -379,13 +461,34 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
     set((s) => {
       const cur = s.slots[s.activeSlot]
       if (cur.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(cur.previewUrl)
+      const epoch = cur.draftEpoch + 1
       const next = {
-        slots: { ...s.slots, [s.activeSlot]: { ...SLOT_DEFAULTS } },
+        slots: {
+          ...s.slots,
+          [s.activeSlot]: { ...SLOT_DEFAULTS, draftEpoch: epoch },
+        },
       }
       queueMicrotask(() => savePersisted({ ...get(), ...next } as CreateCharState))
       return next
     }),
+  bumpSlotEpoch: (slot) => {
+    let nextEpoch = 0
+    set((s) => {
+      nextEpoch = (s.slots[slot].draftEpoch || 0) + 1
+      return {
+        slots: {
+          ...s.slots,
+          [slot]: { ...s.slots[slot], draftEpoch: nextEpoch },
+        },
+      }
+    })
+    scheduleSave(get())
+    return nextEpoch
+  },
 }))
+
+// 启动即写回瘦身后的草稿，立刻甩掉旧版多槽 imageBase64（否则要等用户再操作才缩 Local Storage）
+queueMicrotask(() => savePersisted(useCreateCharStore.getState()))
 
 /** 读当前槽草稿（组件里用） */
 export function selectActiveSlot(s: CreateCharState): CreateCharSlotDraft {
@@ -403,6 +506,38 @@ export function slotLabel(slot: CreateCharSlotDraft, id: CreateCharSlotId): stri
     /* ignore */
   }
   const busyHint =
-    slot.busy === 'idle' ? '' : slot.busy === 'auto' ? ' ·跑着' : ` ·${slot.busy}`
+    slot.queueStatus === 'queued'
+      ? ` ·排队${slot.queuePosition || ''}`
+      : slot.queueStatus === 'running'
+        ? ' ·运行中'
+        : slot.busy === 'idle'
+          ? ''
+          : slot.busy === 'auto'
+            ? ' ·跑着'
+            : ` ·${slot.busy}`
   return name ? `${id}·${name}${busyHint}` : `角色${id}${busyHint}`
+}
+
+export function findSlotByCharacterId(characterId: string): CreateCharSlotId | null {
+  const id = (characterId || '').trim()
+  if (!id) return null
+  const st = useCreateCharStore.getState()
+  for (const slot of CREATE_CHAR_SLOT_IDS) {
+    if (st.slots[slot].createdCharacterId === id) return slot
+  }
+  return null
+}
+
+/** 立绘/封面只能写入与槽内 createdCharacterId 完全一致的角色 */
+export function slotAcceptsPortrait(slot: CreateCharSlotDraft, characterId: string): boolean {
+  const cid = (characterId || '').trim()
+  if (!cid || !slot.createdCharacterId) return false
+  return slot.createdCharacterId === cid
+}
+
+/** 立绘是否仍属于当前槽任务（防旧任务迟到的图） */
+export function portraitMatchesSlot(slot: CreateCharSlotDraft): boolean {
+  if (!slot.portraitUrl) return false
+  if (!slot.createdCharacterId) return false
+  return slot.portraitCharacterId === slot.createdCharacterId
 }

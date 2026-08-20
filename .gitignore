@@ -38,3 +38,6 @@ scripts/_restore_lines.txt
 # Local proxy runtime / large binaries (do not upload)
 .runtime-vless/
 vendor/
+
+# 邮箱库存备份含敏感令牌：默认忽略；上传私有仓库时用 git add -f backups/
+backups/

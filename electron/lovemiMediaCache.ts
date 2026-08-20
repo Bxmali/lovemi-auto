@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { fetch as undiciFetch } from 'undici'
 import { dispatcherFor } from './mailProbe'
@@ -48,14 +48,15 @@ function watermarkScriptPath(): string {
 /**
  * 粉色官方水印 + Telegram 友好导出（下载到推特资源时）
  * 图片强制 JPEG；视频强制 1080x1920 H.264/AAC
+ * 必须用异步 spawn：同步 spawnSync 会卡死 Electron 主进程（跑完 1~2 个角色后像闪退）。
  */
-export function applyPinkOfficialWatermark(input: {
+export async function applyPinkOfficialWatermark(input: {
   srcPath: string
   destPath: string
   kind?: 'portrait' | 'video' | 'media'
   /** 仅转格式、不打水印（水印失败时的回退） */
   noWatermark?: boolean
-}): { ok: boolean; error?: string; destPath?: string } {
+}): Promise<{ ok: boolean; error?: string; destPath?: string }> {
   try {
     if (!input.srcPath || !fs.existsSync(input.srcPath)) {
       return { ok: false, error: '源文件不存在' }
@@ -77,14 +78,52 @@ export function applyPinkOfficialWatermark(input: {
     if (isVideo) args.push('--video')
     if (input.noWatermark) args.push('--no-watermark')
 
-    const run = spawnSync('python3', args, {
-      encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: isVideo ? 300_000 : 60_000,
+    const timeoutMs = isVideo ? 300_000 : 60_000
+    const run = await new Promise<{
+      code: number | null
+      stdout: string
+      stderr: string
+      timedOut: boolean
+    }>((resolve) => {
+      const child = spawn('python3', args, { stdio: ['ignore', 'pipe', 'pipe'] })
+      let stdout = ''
+      let stderr = ''
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        try {
+          child.kill('SIGKILL')
+        } catch {
+          /* ignore */
+        }
+      }, timeoutMs)
+      child.stdout.on('data', (chunk: Buffer | string) => {
+        stdout += String(chunk)
+        if (stdout.length > 8 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024)
+      })
+      child.stderr.on('data', (chunk: Buffer | string) => {
+        stderr += String(chunk)
+        if (stderr.length > 8 * 1024 * 1024) stderr = stderr.slice(-2 * 1024 * 1024)
+      })
+      child.on('error', (err) => {
+        clearTimeout(timer)
+        resolve({ code: 1, stdout, stderr: err.message, timedOut })
+      })
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        resolve({ code, stdout, stderr, timedOut })
+      })
     })
 
-    if (run.status !== 0 || !fs.existsSync(finalDest) || fs.statSync(finalDest).size < 200) {
-      const err = (run.stderr || run.stdout || 'watermark failed').slice(-400)
+    if (
+      run.timedOut ||
+      run.code !== 0 ||
+      !fs.existsSync(finalDest) ||
+      fs.statSync(finalDest).size < 200
+    ) {
+      const err = (
+        run.timedOut ? 'watermark timeout' : run.stderr || run.stdout || 'watermark failed'
+      ).slice(-400)
       return { ok: false, error: err }
     }
     return { ok: true, destPath: finalDest }
@@ -94,14 +133,14 @@ export function applyPinkOfficialWatermark(input: {
 }
 
 /** 复制到 Downloads/推特资源，文件名=角色名（重名自动 _2/_3），JPEG/MP4 + 粉色水印 */
-export function copyToTwitterResource(input: {
+export async function copyToTwitterResource(input: {
   localPath: string
   displayName: string
   downloadsPath: string
   kind?: 'portrait' | 'video' | 'media'
   /** @deprecated 推特资源统一 jpg/mp4，忽略 CDN 原扩展名 */
   extOverride?: string
-}): { ok: boolean; destPath?: string; error?: string } {
+}): Promise<{ ok: boolean; destPath?: string; error?: string }> {
   try {
     if (!input.localPath || !fs.existsSync(input.localPath)) {
       return { ok: false, error: '本地文件不存在' }
@@ -125,7 +164,7 @@ export function copyToTwitterResource(input: {
       if (n > 99) break
     }
 
-    const marked = applyPinkOfficialWatermark({
+    const marked = await applyPinkOfficialWatermark({
       srcPath: input.localPath,
       destPath: dest,
       kind: isVideo ? 'video' : input.kind || 'portrait',
@@ -140,7 +179,7 @@ export function copyToTwitterResource(input: {
     }
 
     // 水印失败：仍转成 jpg/mp4，绝不原样落 webp
-    const plain = applyPinkOfficialWatermark({
+    const plain = await applyPinkOfficialWatermark({
       srcPath: input.localPath,
       destPath: dest,
       kind: isVideo ? 'video' : input.kind || 'portrait',
@@ -218,6 +257,9 @@ export async function cacheLovemiCdnMedia(input: {
   saveDisplayName?: string
   downloadsPath?: string
   kind?: 'portrait' | 'video' | 'media'
+  characterId?: string
+  assetId?: string
+  runId?: string
 }): Promise<{
   ok: boolean
   error?: string
@@ -232,7 +274,11 @@ export async function cacheLovemiCdnMedia(input: {
   if (!input.proxyUrl) return { ok: false, error: '未配置出站代理' }
 
   const dir = mediaCacheDir(input.appData)
-  const hash = createHash('sha1').update(url.split('?')[0]).digest('hex').slice(0, 16)
+  const identity = [input.characterId, input.assetId, input.runId].filter(Boolean).join(':')
+  const hash = createHash('sha1')
+    .update(`${url.split('?')[0]}|${identity || 'legacy'}`)
+    .digest('hex')
+    .slice(0, 16)
   const existing = fs.readdirSync(dir).find((f) => f.startsWith(`m-${hash}.`) || f.startsWith(`m-${hash}-`))
   let localPath = ''
   let fileName = ''
@@ -310,9 +356,22 @@ export async function cacheLovemiCdnMedia(input: {
     }
   }
 
+  const verifyHead = Buffer.alloc(32)
+  const verifyFd = fs.openSync(localPath, 'r')
+  fs.readSync(verifyFd, verifyHead, 0, 32, 0)
+  fs.closeSync(verifyFd)
+  const verifiedExt = sniffMediaExt(verifyHead) || path.extname(localPath)
+  const isVerifiedVideo = /\.(mp4|webm|mov|m4v)$/i.test(verifiedExt)
+  if (input.kind === 'portrait' && isVerifiedVideo) {
+    return { ok: false, error: '素材类型校验失败：立绘 URL 实际返回视频' }
+  }
+  if (input.kind === 'video' && !isVerifiedVideo) {
+    return { ok: false, error: '素材类型校验失败：视频 URL 实际返回的不是视频' }
+  }
+
   let twitterPath: string | undefined
   if (input.saveDisplayName && input.downloadsPath) {
-    const copied = copyToTwitterResource({
+    const copied = await copyToTwitterResource({
       localPath,
       displayName: input.saveDisplayName,
       downloadsPath: input.downloadsPath,

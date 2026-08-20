@@ -152,6 +152,18 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
+function assetRecordTime(item: Record<string, unknown>): number {
+  for (const key of ['created_at', 'updated_at', 'generated_at']) {
+    const value = item[key]
+    if (typeof value === 'number') return value < 10_000_000_000 ? value * 1000 : value
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value)
+      if (!Number.isNaN(parsed)) return parsed
+    }
+  }
+  return 0
+}
+
 function isNoRefVideoError(text: string) {
   return /没有可用于视频生成的参考图|视频暂时无法发送|no .*reference.*(image|asset)|reference image/i.test(
     text,
@@ -178,6 +190,9 @@ export async function fetchLatestCharacterVideo(input: {
   sessionToken?: string
   /** 若提供则优先返回不在此集合内的新视频 */
   excludeAssetIds?: string[]
+  /** 严格模式：只接受本次流水线开始后产生的视频 */
+  minCreatedAt?: number
+  expectedCoverAssetId?: string
 }): Promise<{
   ok: boolean
   error?: string
@@ -187,6 +202,20 @@ export async function fetchLatestCharacterVideo(input: {
   const token = adminToken(input.sessionToken)
   if (!token) return { ok: false, error: '缺少管理员 Bearer' }
   const exclude = new Set(input.excludeAssetIds || [])
+  const coverLineageMatches = (it: Record<string, unknown>) => {
+    const characterIds: string[] =
+      JSON.stringify(it).match(/(?:chr_|character_)[a-zA-Z0-9_-]+/g) ?? []
+    if (characterIds.length && !characterIds.includes(input.characterId)) return false
+    if (!input.expectedCoverAssetId) return true
+    const lineage = JSON.stringify({
+      input_asset_ids: it.input_asset_ids,
+      source_asset_id: it.source_asset_id,
+      reference_asset_id: it.reference_asset_id,
+      metadata: it.metadata,
+      generation: it.generation,
+    })
+    return lineage === '{}' || !/asset_/.test(lineage) || lineage.includes(input.expectedCoverAssetId)
+  }
 
   for (const scope of ['active', 'all'] as const) {
     const assets = await apiJson({
@@ -199,14 +228,18 @@ export async function fetchLatestCharacterVideo(input: {
     const items = Array.isArray(assets.data.items)
       ? (assets.data.items as Record<string, unknown>[])
       : []
-    const videos = items.filter(
-      (it) =>
+    const videos = items
+      .filter(
+        (it) =>
         String(it.asset_kind || '').includes('video') &&
         typeof it.asset_id === 'string' &&
-        String(it.asset_id).startsWith('asset_'),
-    )
-    const preferred =
-      videos.find((it) => !exclude.has(String(it.asset_id))) || videos[0]
+          String(it.asset_id).startsWith('asset_') &&
+          !exclude.has(String(it.asset_id)) &&
+          (!input.minCreatedAt || !assetRecordTime(it) || assetRecordTime(it) >= input.minCreatedAt - 5000) &&
+          coverLineageMatches(it),
+      )
+      .sort((a, b) => assetRecordTime(b) - assetRecordTime(a))
+    const preferred = videos[0]
     if (!preferred?.asset_id) continue
     let cdnUrl = pickAssetCdnUrl(preferred)
     if (!cdnUrl) {
@@ -220,7 +253,7 @@ export async function fetchLatestCharacterVideo(input: {
     }
     return { ok: true, videoAssetId: String(preferred.asset_id), cdnUrl }
   }
-  return { ok: false, error: '角色资产里还没有视频' }
+  return { ok: false, error: '角色资产里没有可确认属于本次任务的新视频' }
 }
 
 /** 先 accept 立绘 + presentation 封面（可选写发布草稿封面），让 companion 有头像/参考图 */
@@ -310,6 +343,8 @@ export async function requestCompanionMotionVideo(input: {
   title?: string
   coverAssetId?: string
   timeoutMs?: number
+  runStartedAt?: number
+  shouldCancel?: () => boolean
 }): Promise<{
   ok: boolean
   error?: string
@@ -321,6 +356,7 @@ export async function requestCompanionMotionVideo(input: {
 }> {
   const token = adminToken(input.sessionToken)
   if (!token) return { ok: false, error: '缺少管理员 Bearer' }
+  if (input.shouldCancel?.()) return { ok: false, error: '任务已取消' }
 
   const prepared = await prepareCharacterCover({
     characterId: input.characterId,
@@ -383,12 +419,17 @@ export async function requestCompanionMotionVideo(input: {
       proxyUrl: input.proxyUrl,
       sessionToken: token,
       excludeAssetIds: [...beforeVideos],
+      minCreatedAt: input.runStartedAt,
+      expectedCoverAssetId: prepared.coverAssetId,
     })
 
   // 无参考图 / still being processed / 网络瞬时错误 → 等待捞视频或重试发消息
   const maxAttempts = 6
   let lastFailReason = ''
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (input.shouldCancel?.()) {
+      return { ok: false, error: '任务已取消', labProjectId: labId, coverAssetId: prepared.coverAssetId }
+    }
     if (attempt > 1) {
       const reasonHint = lastFailReason || '重试'
       appendConsoleLog({
@@ -461,6 +502,14 @@ export async function requestCompanionMotionVideo(input: {
           })
           const waitUntil = Date.now() + Math.min(120_000, 20_000 * attempt)
           while (Date.now() < waitUntil) {
+            if (input.shouldCancel?.()) {
+              return {
+                ok: false,
+                error: '任务已取消',
+                labProjectId: labId,
+                coverAssetId: prepared.coverAssetId,
+              }
+            }
             const mid = await trySalvage()
             if (mid.ok && mid.videoAssetId) {
               appendConsoleLog({
@@ -524,6 +573,14 @@ export async function requestCompanionMotionVideo(input: {
     let lastThreadHint = ''
     let lastHeartbeat = 0
     while (Date.now() - started < timeoutMs) {
+      if (input.shouldCancel?.()) {
+        return {
+          ok: false,
+          error: '任务已取消',
+          labProjectId: labId,
+          coverAssetId: prepared.coverAssetId,
+        }
+      }
       const elapsed = Date.now() - started
       if (elapsed - lastHeartbeat >= 15_000) {
         lastHeartbeat = elapsed
@@ -542,13 +599,35 @@ export async function requestCompanionMotionVideo(input: {
       const items = Array.isArray(assets.data.items)
         ? (assets.data.items as Record<string, unknown>[])
         : []
-      const videos = items.filter(
-        (it) =>
+      const videos = items
+        .filter(
+          (it) =>
           String(it.asset_kind || '').includes('video') &&
           typeof it.asset_id === 'string' &&
-          String(it.asset_id).startsWith('asset_'),
-      )
-      const newest = videos.find((it) => !beforeVideos.has(String(it.asset_id)))
+            String(it.asset_id).startsWith('asset_') &&
+            (!input.runStartedAt ||
+              !assetRecordTime(it) ||
+              assetRecordTime(it) >= input.runStartedAt - 5000),
+        )
+        .sort((a, b) => assetRecordTime(b) - assetRecordTime(a))
+      const newest = videos.find((it) => {
+        if (beforeVideos.has(String(it.asset_id))) return false
+        const characterIds: string[] =
+          JSON.stringify(it).match(/(?:chr_|character_)[a-zA-Z0-9_-]+/g) ?? []
+        if (characterIds.length && !characterIds.includes(input.characterId)) return false
+        const lineage = JSON.stringify({
+          input_asset_ids: it.input_asset_ids,
+          source_asset_id: it.source_asset_id,
+          reference_asset_id: it.reference_asset_id,
+          metadata: it.metadata,
+          generation: it.generation,
+        })
+        return (
+          !prepared.coverAssetId ||
+          !/asset_/.test(lineage) ||
+          lineage.includes(prepared.coverAssetId)
+        )
+      })
       if (newest?.asset_id) {
         let cdnUrl = pickAssetCdnUrl(newest)
         if (!cdnUrl) {

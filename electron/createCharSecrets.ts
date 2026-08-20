@@ -10,6 +10,8 @@ export type CreateCharSecrets = {
   adminSessionToken?: string
   adminEmailLocal?: string
   adminAccountId?: string
+  /** 推特资源父目录；其下自动建「推特资源」。空=系统 Downloads */
+  downloadsDir?: string
 }
 
 const DEFAULTS: CreateCharSecrets = {
@@ -65,5 +67,6 @@ export function createCharConfigPublic() {
     hasAdminToken: Boolean(s.adminSessionToken),
     adminEmailLocal: s.adminEmailLocal || '',
     adminAccountId: s.adminAccountId || '',
+    downloadsDir: (s.downloadsDir || '').trim(),
   }
 }

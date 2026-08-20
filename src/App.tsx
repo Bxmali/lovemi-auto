@@ -210,7 +210,13 @@ export default function App() {
         {nav === 'security' ? <SecurityLogPage /> : null}
         {nav === 'settings' ? <SettingsPage /> : null}
       </main>
-      {toast ? <div className="toast">{toast}</div> : null}
+      {toast &&
+      !(
+        nav === 'console' &&
+        /^(槽\d|【槽\d)|全自动|立绘|生图|创建角色|角色已/.test(toast)
+      ) ? (
+        <div className="toast">{toast}</div>
+      ) : null}
     </div>
   )
 }

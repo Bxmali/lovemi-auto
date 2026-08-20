@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo, useCallback } from 'react'
+import { useEffect, useRef, useState, memo, useCallback, useMemo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useConsoleStore, type ConsoleLogRow } from '../store/consoleStore'
 import { useEmailStore } from '../store/emailStore'
@@ -46,7 +46,10 @@ export function ConsolePage() {
   const engaging = useConsoleStore((s) => s.engaging)
   const renaming = useConsoleStore((s) => s.renaming)
   const setRenaming = useConsoleStore((s) => s.setRenaming)
-  const logs = useConsoleStore((s) => s.logs)
+  const allLogs = useConsoleStore((s) => s.logs)
+  // 拉人/互动控制台只显示互动相关日志；创建角色有自己的三槽步骤日志。
+  const logs = useMemo(() => allLogs.filter((row) => row.action !== 'create_char'), [allLogs])
+  const newestLogId = logs[0]?.id
   const stats = useConsoleStore((s) => s.stats)
   const failStreak = useConsoleStore((s) => s.failStreak)
   const gapMinMs = useConsoleStore((s) => s.gapMinMs)
@@ -94,7 +97,7 @@ export function ConsolePage() {
     if (!el) return
     // 仅贴底，不用 smooth（高频日志会卡）
     el.scrollTop = 0
-  }, [logs[0]?.id, followTail, logs.length])
+  }, [newestLogId, followTail, logs.length])
 
   useEffect(() => {
     if (!autoEngage) return

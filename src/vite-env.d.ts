@@ -210,6 +210,7 @@ interface LovemiBridge {
     hasAdminToken: boolean
     adminEmailLocal: string
     adminAccountId: string
+    downloadsDir: string
   }>
   createCharSaveConfig: (input: {
     teamoApiBase?: string
@@ -218,6 +219,7 @@ interface LovemiBridge {
     adminSessionToken?: string
     adminEmailLocal?: string
     adminAccountId?: string
+    downloadsDir?: string
   }) => Promise<{
     teamoApiBase: string
     teamoModel: string
@@ -225,6 +227,18 @@ interface LovemiBridge {
     hasAdminToken: boolean
     adminEmailLocal: string
     adminAccountId: string
+    downloadsDir: string
+  }>
+  createCharPickDownloadsDir: () => Promise<{
+    ok: boolean
+    teamoApiBase: string
+    teamoModel: string
+    hasApiKey: boolean
+    hasAdminToken: boolean
+    adminEmailLocal: string
+    adminAccountId: string
+    downloadsDir: string
+    defaultDownloadsDir: string
   }>
   createCharAnalyze: (input: {
     imageBase64: string
@@ -371,7 +385,9 @@ interface LovemiBridge {
     proxyUrl?: string
     sessionToken?: string
     userHint?: string
-    clientSlot?: 1 | 2 | 3
+    clientSlot?: 1 | 2 | 3 | 4 | 5
+    clientRunEpoch?: number
+    clientRunId: string
   }) => Promise<{
     ok: boolean
     error?: string
@@ -384,12 +400,26 @@ interface LovemiBridge {
     videoCdnUrl?: string
     listingId?: string
     portraitCdnUrl?: string
+    portraitJobId?: string
+    runId?: string
+    runStartedAt?: number
+    cancelled?: boolean
+  }>
+  createCharCancelFullAuto: (input: { runId: string }) => Promise<{
+    ok: boolean
+    error?: string
   }>
   onCreateCharProgress: (
     cb: (p: {
       stage: string
-      clientSlot?: 1 | 2 | 3
+      clientSlot?: 1 | 2 | 3 | 4 | 5
+      clientRunEpoch?: number
+      runId?: string
+      runStartedAt?: number
+      queuePosition?: number
+      error?: string
       characterId?: string
+      portraitJobId?: string
       portraitCdnUrl?: string
       coverAssetId?: string
       payload?: Record<string, unknown>
@@ -405,6 +435,9 @@ interface LovemiBridge {
     proxyUrl?: string
     displayName?: string
     kind?: 'portrait' | 'video' | 'media'
+    characterId?: string
+    assetId?: string
+    runId?: string
   }) => Promise<{
     ok: boolean
     error?: string
