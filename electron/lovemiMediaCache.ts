@@ -78,7 +78,7 @@ export async function applyPinkOfficialWatermark(input: {
     if (isVideo) args.push('--video')
     if (input.noWatermark) args.push('--no-watermark')
 
-    const timeoutMs = isVideo ? 300_000 : 60_000
+    const timeoutMs = isVideo ? 420_000 : 90_000
     const run = await new Promise<{
       code: number | null
       stdout: string

@@ -2151,8 +2151,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           ) : null}
           {motionPrompt ? (
             <div className="settings-hint" style={{ marginTop: 10 }}>
-              Teamo 动态提示词：{motionPrompt.slice(0, 120)}
-              {motionPrompt.length > 120 ? '…' : ''}
+              Teamo 动态提示词：{motionPrompt.slice(0, 220)}
+              {motionPrompt.length > 220 ? '…' : ''}
             </div>
           ) : null}
           {motionPreviewUrl || motionOutputAssetId ? (

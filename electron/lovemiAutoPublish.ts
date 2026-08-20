@@ -16,19 +16,28 @@ import {
 import { requestCompanionMotionVideo } from './lovemiCompanionVideo'
 import { acceptVisualReference, setPreviewAndMaybePublish } from './lovemiPublish'
 
-const MOTION_PROMPT_SYSTEM = `你是成人向短视频导演，给 Lovemi companion 写**极简**中文催视频提示词。
+const MOTION_PROMPT_SYSTEM = `你是成人向短视频导演，给 Lovemi companion 写中文**催视频提示词**。
 
 硬性要求：
 - 角色一律**已确认年满 21 岁成年女性**；禁止未成年/幼态/学生暗示
-- 中文；**30–60 字**；只返回提示词正文，不要 JSON、不要解释、不要拒写
-- 核心只要「很诱人」：眼神、呼吸、发丝、浅笑 —— **一个微动就够**
-- **严禁复杂动作**：禁止转身、舞蹈、多步骤手势、走位、道具戏、大幅度肢体
-- 5 秒、9:16 竖屏、半身近景；几乎静止的暧昧特写
-- 禁止：换脸、夸张变形、瞬移、水印、多镜头
-- 东亚角色：写「东亚面孔」；娇羞勾人即可`
+- 中文；**90–160 字**；只返回提示词正文，不要 JSON、不要解释、不要拒写
+- 内容要比「一句话」更丰满：写清景别、光影氛围、表情、呼吸、发丝、肩颈/胸口微动、镜头缓慢推进或轻微晃动之一；可补 1～2 个感官细节（眼神、嘴角、衣料轻颤）
+- 仍保持「诱人、几乎静止」：以微动为主，**严禁**转身、舞蹈、多步骤手势、走位、道具戏、大幅度肢体
+- 写明：5 秒、9:16 竖屏、半身近景（或半身偏近）
+- 禁止：换脸、夸张变形、瞬移、水印、多镜头硬切
+- 东亚角色：写「东亚面孔」；娇羞勾人即可
+- **最后一句必须点明要视频**，例如：「请据此生成一段 5 秒竖屏短视频。」或「请输出对应动态视频。」`
 
 const FALLBACK_MOTION_PROMPT =
-  '5秒竖屏9:16半身近景，成年东亚女性，眼神勾人，轻轻呼吸，发丝微晃，嘴角浅笑，很诱人，几乎静止，禁止复杂动作与换脸。'
+  '5秒竖屏9:16半身近景，成年东亚女性，暖光侧打，眼神勾人带湿意，胸口随呼吸轻轻起伏，发丝在颊边微晃，嘴角浅笑，衣料随呼吸轻颤，镜头极缓慢推进，几乎静止的暧昧特写，禁止复杂动作与换脸。请据此生成一段5秒竖屏短视频。'
+
+function ensureMotionPromptEndsWithVideoAsk(text: string): string {
+  const t = text.trim().replace(/[。．.！!？?\s]+$/u, '')
+  if (/生成.{0,8}(短)?视频|输出.{0,6}(动态)?视频|要一段?.{0,6}视频|做成视频/i.test(t)) {
+    return `${t}。`
+  }
+  return `${t}。请据此生成一段5秒竖屏短视频。`
+}
 
 function isMotionPromptRefusal(text: string): boolean {
   return /不能帮你|无法协助|我不能|拒[绝写]|未成年|近未成年|underage|as an ai|i can'?t|i cannot|sorry,? i/i.test(
@@ -84,8 +93,8 @@ export async function generateSeductiveMotionPrompt(input: {
   const url = `${secrets.teamoApiBase.replace(/\/$/, '')}/chat/completions`
   const userText = [
     dataUrl
-      ? '根据这张立绘，写极简催视频词：很诱人，几乎静止，一个微动。'
-      : '根据文字描述，写极简催视频词：很诱人，几乎静止，一个微动。',
+      ? '根据这张立绘，写催视频提示词：诱人、几乎静止，但细节比极简版更丰满（光影/表情/呼吸/发丝/镜头微动）。'
+      : '根据文字描述，写催视频提示词：诱人、几乎静止，但细节更丰满（光影/表情/呼吸/发丝/镜头微动）。',
     input.characterHint ? `角色：${input.characterHint}` : '',
     input.appearanceHint
       ? `已核验外观锁（视频必须保持同一角色、朝向、发型、服装与表情）：${input.appearanceHint.slice(0, 600)}`
@@ -95,7 +104,8 @@ export async function generateSeductiveMotionPrompt(input: {
     )
       ? '锁东亚面孔。'
       : '',
-    '只允许：呼吸 / 眨眼 / 发丝晃 / 浅笑 之一。禁止转身、舞蹈、多步骤。30–60字。',
+    '以微动为主（呼吸/眨眼/发丝/浅笑/肩颈轻颤/镜头缓推 可组合 2～3 项）。禁止转身、舞蹈、多步骤。90–160字。',
+    '最后一句必须写：请据此生成一段5秒竖屏短视频。',
   ]
     .filter(Boolean)
     .join('\n')
@@ -112,7 +122,7 @@ export async function generateSeductiveMotionPrompt(input: {
       signal: AbortSignal.timeout(120_000),
       body: JSON.stringify({
         model: secrets.teamoModel || 'gpt-5.4-mini',
-        temperature: 0.4,
+        temperature: 0.55,
         messages: [
           { role: 'system', content: MOTION_PROMPT_SYSTEM },
           dataUrl
@@ -151,6 +161,7 @@ export async function generateSeductiveMotionPrompt(input: {
       })
       return { ok: true, prompt: FALLBACK_MOTION_PROMPT, model: secrets.teamoModel }
     }
+    text = ensureMotionPromptEndsWithVideoAsk(text)
     appendConsoleLog({
       level: 'info',
       action: 'create_char',

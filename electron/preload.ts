@@ -508,4 +508,24 @@ contextBridge.exposeInMainWorld('lovemi', {
       bytes?: number
       twitterPath?: string
     }>,
+
+  captionGenerate: (input: {
+    proxyUrl?: string
+    images: Array<{ base64: string; mimeType?: string }>
+    fileName?: string
+    characterName?: string
+    userHint?: string
+    style?: 'standard' | 'twitterComment'
+  }) =>
+    ipcRenderer.invoke('caption:generate', input) as Promise<{
+      ok: boolean
+      error?: string
+      caption?: string
+      ownerName?: string
+      characterName?: string
+      model?: string
+      style?: 'standard' | 'twitterComment'
+      kinkLabel?: string
+      rawPreview?: string
+    }>,
 })

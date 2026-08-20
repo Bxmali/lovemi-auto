@@ -8,14 +8,24 @@ import { fileURLToPath } from 'node:url'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
-/** Keep watermark_pink.py beside compiled main.js */
+/** Keep watermark helpers beside compiled main.js */
 function copyWatermarkScript(): Plugin {
-  const src = path.join(rootDir, 'electron', 'watermark_pink.py')
-  const dest = path.join(rootDir, 'dist-electron', 'watermark_pink.py')
+  const files = ['watermark_pink.py', 'watermark_text']
   const copy = () => {
-    if (!fs.existsSync(src)) return
-    fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.copyFileSync(src, dest)
+    const destDir = path.join(rootDir, 'dist-electron')
+    fs.mkdirSync(destDir, { recursive: true })
+    for (const name of files) {
+      const src = path.join(rootDir, 'electron', name)
+      if (!fs.existsSync(src)) continue
+      fs.copyFileSync(src, path.join(destDir, name))
+      if (name === 'watermark_text') {
+        try {
+          fs.chmodSync(path.join(destDir, name), 0o755)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
   return {
     name: 'copy-watermark-pink',

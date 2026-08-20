@@ -43,6 +43,7 @@ import { setPreviewAndMaybePublish } from './lovemiPublish'
 import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemiCompanionVideo'
 import { autoVideoAndPublish, fullAutoToPublish, generateMotionVideoOnly } from './lovemiAutoPublish'
 import { cacheLovemiCdnMedia, mediaCacheDir } from './lovemiMediaCache'
+import { generateSocialCaption } from './lovemiCaptionGen'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -531,6 +532,31 @@ ipcMain.handle(
       mimeType: input.mimeType,
       proxyUrl: input.proxyUrl,
       userHint: input.userHint,
+    })
+  },
+)
+
+ipcMain.handle(
+  'caption:generate',
+  async (
+    _e,
+    input: {
+      proxyUrl?: string
+      images?: Array<{ base64: string; mimeType?: string }>
+      fileName?: string
+      characterName?: string
+      userHint?: string
+      style?: 'standard' | 'twitterComment'
+    },
+  ) => {
+    if (!input.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）' }
+    return generateSocialCaption({
+      proxyUrl: input.proxyUrl,
+      images: input.images || [],
+      fileName: input.fileName,
+      characterName: input.characterName,
+      userHint: input.userHint,
+      style: input.style,
     })
   },
 )
