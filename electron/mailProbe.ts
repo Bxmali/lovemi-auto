@@ -83,12 +83,55 @@ async function postForm(
   }
 }
 
+function sanitizeOAuthField(value?: string): string {
+  return String(value || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/[\r\n\t]+/g, '')
+    // 误粘贴整段回调 URL / 带 session_state 的尾巴
+    .replace(/[?&](session_state|state|code)=.*$/i, '')
+    .trim()
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function looksLikeClientId(value: string) {
+  return UUID_RE.test(value)
+}
+
+/** 纠正导入时 clientId / refreshToken 对调，并清洗空白/引号 */
+export function normalizeOAuthCredentials(input: {
+  clientId?: string
+  refreshToken?: string
+}): { clientId: string; refreshToken: string; swapped: boolean; warning?: string } {
+  let clientId = sanitizeOAuthField(input.clientId)
+  let refreshToken = sanitizeOAuthField(input.refreshToken)
+  let swapped = false
+  let warning: string | undefined
+
+  // 常见：末尾 UUID 才是 client_id；若 refresh 位是 UUID、client 位是长串 → 对调
+  if (looksLikeClientId(refreshToken) && !looksLikeClientId(clientId) && clientId.length > 40) {
+    const tmp = clientId
+    clientId = refreshToken
+    refreshToken = tmp
+    swapped = true
+    warning = '已自动对调 clientId / refreshToken（导入字段疑似反了）'
+  }
+
+  return { clientId, refreshToken, swapped, warning }
+}
+
 function tokenError(data: Record<string, unknown>, networkError?: string, status?: number) {
   if (networkError) {
     return `网络失败: ${networkError}`
   }
   const desc = String(data.error_description || data.error || '')
   if (/service abuse/i.test(desc)) return '账号被微软标记 abuse，已不可用'
+  if (/AADSTS9002313/i.test(desc)) {
+    return 'AADSTS9002313 请求无效（refresh_token/client_id 格式坏了或被截断，请重导账号行）'
+  }
   if (/AADSTS70000|AADSTS70008|expired|invalid_grant/i.test(desc)) {
     return desc.slice(0, 180) || 'refresh_token 无效或已过期'
   }
@@ -102,23 +145,32 @@ function isNetworkFail(msg?: string) {
 }
 
 export async function acquireAccessToken(
-  clientId: string,
-  refreshToken: string,
+  clientIdRaw: string,
+  refreshTokenRaw: string,
   proxyUrl?: string,
 ): Promise<TokenOk | { error: string }> {
-  const errors: string[] = []
+  const { clientId, refreshToken, warning } = normalizeOAuthCredentials({
+    clientId: clientIdRaw,
+    refreshToken: refreshTokenRaw,
+  })
 
+  if (!clientId || !refreshToken) {
+    return { error: '缺少刷新令牌或客户端 ID（导入后字段为空）' }
+  }
+  if (!looksLikeClientId(clientId)) {
+    return {
+      error: `clientId 不是合法 UUID（当前 ${clientId.slice(0, 12)}…，请检查导入格式 email:pass:refresh:clientId）`,
+    }
+  }
+  if (refreshToken.length < 40) {
+    return {
+      error: `refresh_token 过短（${refreshToken.length} 字符），多半导入被截断或字段错位`,
+    }
+  }
+
+  const errors: string[] = []
+  // 注意：对公共客户端用 graph `.default` 做 refresh 常触发 AADSTS9002313，放到最后兜底
   const attempts: { name: string; url: string; fields: Record<string, string> }[] = [
-    {
-      name: 'graph',
-      url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-      fields: {
-        client_id: clientId,
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        scope: 'https://graph.microsoft.com/.default',
-      },
-    },
     {
       name: 'graph-mail',
       url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
@@ -126,7 +178,17 @@ export async function acquireAccessToken(
         client_id: clientId,
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
-        scope: 'https://graph.microsoft.com/Mail.Read offline_access',
+        scope: 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access openid profile',
+      },
+    },
+    {
+      name: 'graph-openid',
+      url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      fields: {
+        client_id: clientId,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        scope: 'openid offline_access https://graph.microsoft.com/Mail.Read',
       },
     },
     {
@@ -148,6 +210,16 @@ export async function acquireAccessToken(
         scope: 'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
       },
     },
+    {
+      name: 'graph-default',
+      url: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      fields: {
+        client_id: clientId,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        scope: 'https://graph.microsoft.com/.default offline_access',
+      },
+    },
   ]
 
   for (const a of attempts) {
@@ -155,14 +227,19 @@ export async function acquireAccessToken(
     if (r.ok) {
       return {
         accessToken: String(r.data.access_token),
-        refreshToken: r.data.refresh_token ? String(r.data.refresh_token) : undefined,
-        via: a.name,
+        refreshToken: r.data.refresh_token ? String(r.data.refresh_token) : refreshToken,
+        via: warning ? `${a.name}+fixed` : a.name,
       }
     }
     errors.push(`${a.name}: ${tokenError(r.data, r.networkError, r.status)}`)
   }
 
-  return { error: errors[0] || '全部换票路径失败' }
+  // 优先展示非 9002313；否则带格式提示
+  const preferred =
+    errors.find((e) => !/AADSTS9002313/.test(e)) ||
+    errors[0] ||
+    '全部换票路径失败'
+  return { error: preferred }
 }
 
 async function graphMe(accessToken: string, proxyUrl?: string) {
@@ -196,17 +273,25 @@ async function graphMe(accessToken: string, proxyUrl?: string) {
 export async function probeAccount(input: ProbeInput): Promise<ProbeResult> {
   const email = input.email
   const fallbackDirect = input.fallbackDirect !== false
+  const normalized = normalizeOAuthCredentials({
+    clientId: input.clientId,
+    refreshToken: input.refreshToken,
+  })
 
-  if (!input.refreshToken || !input.clientId) {
+  if (!normalized.refreshToken || !normalized.clientId) {
     return { ok: false, email, error: '缺少刷新令牌或客户端 ID' }
   }
 
-  let acquired = await acquireAccessToken(input.clientId, input.refreshToken, input.proxyUrl)
+  let acquired = await acquireAccessToken(
+    normalized.clientId,
+    normalized.refreshToken,
+    input.proxyUrl,
+  )
   let usedProxy = Boolean(input.proxyUrl)
 
   // 仅在明确允许时才直连；默认禁止
   if ('error' in acquired && fallbackDirect && input.proxyUrl && isNetworkFail(acquired.error)) {
-    acquired = await acquireAccessToken(input.clientId, input.refreshToken, undefined)
+    acquired = await acquireAccessToken(normalized.clientId, normalized.refreshToken, undefined)
     usedProxy = false
     if (!('error' in acquired)) {
       acquired = { ...acquired, via: `${acquired.via}+direct` }
@@ -218,12 +303,12 @@ export async function probeAccount(input: ProbeInput): Promise<ProbeResult> {
   }
 
   const proxyForMe = usedProxy ? input.proxyUrl : undefined
-  if (acquired.via.startsWith('graph')) {
+  if (acquired.via.startsWith('graph') || acquired.via.includes('graph')) {
     const me = await graphMe(acquired.accessToken, proxyForMe)
     return {
       ok: true,
       email,
-      refreshToken: acquired.refreshToken,
+      refreshToken: acquired.refreshToken || normalized.refreshToken,
       via: acquired.via,
       displayName: me.ok ? me.displayName : email,
     }
@@ -232,7 +317,7 @@ export async function probeAccount(input: ProbeInput): Promise<ProbeResult> {
   return {
     ok: true,
     email,
-    refreshToken: acquired.refreshToken,
+    refreshToken: acquired.refreshToken || normalized.refreshToken,
     via: acquired.via,
     displayName: `${email} · ${acquired.via}`,
   }

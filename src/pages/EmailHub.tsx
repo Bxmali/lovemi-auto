@@ -62,14 +62,20 @@ function ImportModal({
   if (!open) return null
 
   const onSubmit = () => {
-    const { accounts, errors } = parseAccountLines(raw)
+    const { accounts, errors, warnings } = parseAccountLines(raw)
     if (!accounts.length) {
       setMsg(errors[0] || '没有可导入的行')
       return
     }
     const { count, ids } = importRows(accounts)
-    const text = `已导入 ${count} 个账号${errors.length ? `，跳过 ${errors.length} 行` : ''}，开始探活并自动注册 Lovemi…`
-    setMsg(text)
+    const bits = [
+      `已导入 ${count} 个账号`,
+      errors.length ? `跳过 ${errors.length} 行` : '',
+      warnings.length ? `提示 ${warnings.length} 条` : '',
+      '开始探活并自动注册 Lovemi…',
+    ].filter(Boolean)
+    const text = bits.join('，')
+    setMsg(warnings[0] ? `${text}\n${warnings[0]}` : text)
     setToast(text)
     if (count > 0) {
       void runAutoProbe(ids)
