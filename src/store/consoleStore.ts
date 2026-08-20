@@ -59,10 +59,10 @@ export const useConsoleStore = create<ConsoleUiState>((set, get) => ({
   rateMax: 0.8,
   gapMinMs: 1_500,
   gapMaxMs: 4_000,
-  engageConcurrency: 3,
+  engageConcurrency: 8,
   discoverEveryMs: 3 * 60_000,
   failStreak: 0,
-  failPauseAt: 8,
+  failPauseAt: 20,
   setAutoEngage: (v) => set({ autoEngage: v, ...(v ? {} : { failStreak: 0 }) }),
   setDiscovering: (v) => set({ discovering: v }),
   setEngaging: (v) => set({ engaging: v }),
@@ -70,7 +70,7 @@ export const useConsoleStore = create<ConsoleUiState>((set, get) => ({
   bumpFailStreak: () => set({ failStreak: get().failStreak + 1 }),
   resetFailStreak: () => set({ failStreak: 0 }),
   refreshLogs: async () => {
-    const logs = (await window.lovemi?.consoleLogs?.(80)) || []
+    const logs = (await window.lovemi?.consoleLogs?.(20)) || []
     set({ logs })
   },
   refreshStats: async () => {

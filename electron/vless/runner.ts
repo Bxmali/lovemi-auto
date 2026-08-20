@@ -73,18 +73,22 @@ async function ensureSingBoxBinary(fallbackLocalProxy?: string): Promise<string>
   fs.mkdirSync(destRoot, { recursive: true })
   const tag = platformTag()
   const folder = `sing-box-${SINGBOX_VERSION}-${tag}`
-  const archive = path.join(destRoot, 'sing-box.tgz')
-  const url = `https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${tag}.tar.gz`
+  const isWin = process.platform === 'win32'
+  const archiveName = isWin ? 'sing-box.zip' : 'sing-box.tgz'
+  const archive = path.join(destRoot, archiveName)
+  const ext = isWin ? 'zip' : 'tar.gz'
+  const url = `https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${tag}.${ext}`
 
   try {
     await downloadWithOptionalProxy(url, archive, undefined)
   } catch {
-    if (!fallbackLocalProxy) throw new Error('下载 sing-box 失败（直连），请开启本地 7890 兜底后重试')
+    if (!fallbackLocalProxy) throw new Error('下载 sing-box 失败（直连），请开启本地 HTTP 代理兜底后重试')
     await downloadWithOptionalProxy(url, archive, fallbackLocalProxy)
   }
 
   await new Promise<void>((resolve, reject) => {
-    const p = spawn('tar', ['-xzf', archive, '-C', destRoot], { stdio: 'ignore' })
+    const tarArgs = isWin ? ['-xf', archive, '-C', destRoot] : ['-xzf', archive, '-C', destRoot]
+    const p = spawn('tar', tarArgs, { stdio: 'ignore' })
     p.on('error', reject)
     p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))))
   })

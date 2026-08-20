@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { LOCALES, type LocaleCode } from './locales'
+import { generateZhCharacterComments, generateZhDisplayNames } from './zhCopyPools'
 
 type Frag = { hooks: string[]; mids: string[]; tails: string[] }
 
@@ -322,6 +323,7 @@ function uniqPushName(set: Set<string>, arr: string[], v: string, max: number) {
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
 
 export function generateComments(locale: LocaleCode, count = 300): string[] {
+  if (locale === 'zh') return generateZhCharacterComments(Math.max(count, 320))
   const frag = COMMENT_FRAG[locale]
   const out: string[] = []
   const seen = new Set<string>()
@@ -369,6 +371,7 @@ export function generateComments(locale: LocaleCode, count = 300): string[] {
 }
 
 export function generateDisplayNames(locale: LocaleCode, count = 300): string[] {
+  if (locale === 'zh') return generateZhDisplayNames(Math.max(count, 320))
   const frag = NAME_FRAG[locale]
   const out: string[] = []
   const seen = new Set<string>()
@@ -430,10 +433,10 @@ export function buildAllCopySeed(opts?: { namesOnly?: boolean }) {
   const globalName = new Set<string>()
   for (const locale of LOCALES) {
     if (!opts?.namesOnly) {
-      const bodies = generateComments(locale, 300)
+      const bodies = generateComments(locale, locale === 'zh' ? 360 : 300)
       bodies.forEach((body, idx) => comments.push({ id: commentId(locale, body, idx), locale, body }))
     }
-    const nm = generateDisplayNames(locale, 300)
+    const nm = generateDisplayNames(locale, locale === 'zh' ? 360 : 300)
     for (const name of nm) {
       let n = name
       let norm = normalizeName(n)
@@ -448,17 +451,19 @@ export function buildAllCopySeed(opts?: { namesOnly?: boolean }) {
       globalName.add(norm)
       names.push({ id: nameId(locale, n), locale, name: n, normalized: norm })
     }
-    let extra = 0
-    while (names.filter((x) => x.locale === locale).length < 300 && extra < 1200) {
-      extra++
-      const a = NAME_FRAG[locale].a[extra % 20]
-      const b = NAME_FRAG[locale].b[(extra * 3) % 20]
-      const c = NAME_FRAG[locale].c[(extra * 5) % 20]
-      const n = `${a}_${b}${c}`.slice(0, 22)
-      const norm = normalizeName(n)
-      if (globalName.has(norm) || hasDigit(n)) continue
-      globalName.add(norm)
-      names.push({ id: nameId(locale, n), locale, name: n, normalized: norm })
+    if (locale !== 'zh') {
+      let extra = 0
+      while (names.filter((x) => x.locale === locale).length < 300 && extra < 1200) {
+        extra++
+        const a = NAME_FRAG[locale].a[extra % 20]
+        const b = NAME_FRAG[locale].b[(extra * 3) % 20]
+        const c = NAME_FRAG[locale].c[(extra * 5) % 20]
+        const n = `${a}_${b}${c}`.slice(0, 22)
+        const norm = normalizeName(n)
+        if (globalName.has(norm) || hasDigit(n)) continue
+        globalName.add(norm)
+        names.push({ id: nameId(locale, n), locale, name: n, normalized: norm })
+      }
     }
   }
   return { comments, names }

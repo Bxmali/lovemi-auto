@@ -25,7 +25,7 @@ export function CopyLibraryPage() {
   useEffect(() => {
     if (!pageRef.current) return
     runEmailPageEnter(pageRef.current)
-  }, [tab, locale])
+  }, [])
 
   const refresh = async () => {
     setLoading(true)

@@ -1,6 +1,7 @@
 import { openAccountsDb } from './accountsDb'
-import { buildAllCopySeed, normalizeName } from './copySeed'
-import { buildExploreCopySeed } from './exploreCopySeed'
+import { buildAllCopySeed, commentId, generateComments, generateDisplayNames, nameId, normalizeName } from './copySeed'
+import { buildExploreCopySeed, exploreCommentId, generateExploreComments } from './exploreCopySeed'
+import { ZH_COPY_STYLE } from './zhCopyPools'
 import { LOCALES, LOCALE_LABEL, type LocaleCode, isLocale } from './locales'
 import {
   commentListingAsset,
@@ -72,8 +73,78 @@ export function clearConsoleLogsView() {
   openAccountsDb().exec('DELETE FROM console_logs')
 }
 
+function refreshZhCopyPools(db: ReturnType<typeof openAccountsDb>): boolean {
+  const oldNames = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM display_name_pool
+       WHERE locale = 'zh' AND (name LIKE '%路过%' OR name LIKE '北巷%' OR name LIKE '孤狼%' OR name LIKE '%执刀%')`,
+    )
+    .get() as { n: number }
+  const oldComments = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM comment_templates
+       WHERE locale = 'zh' AND (body LIKE '%腰线绝了%' OR body LIKE '%这氛围感直接拿下%' OR body LIKE '%好欲好欲%')`,
+    )
+    .get() as { n: number }
+  const zhCommentN = db
+    .prepare(`SELECT COUNT(*) AS n FROM comment_templates WHERE locale = 'zh'`).get() as { n: number }
+  const zhNameN = db
+    .prepare(`SELECT COUNT(*) AS n FROM display_name_pool WHERE locale = 'zh'`).get() as { n: number }
+  const newStyleHit = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM comment_templates WHERE locale = 'zh' AND body LIKE '%求教程 咋做的这么好%'`,
+    )
+    .get() as { n: number }
+
+  const needNames = Number(oldNames.n) > 8 || Number(zhNameN.n) < 80
+  const needComments =
+    Number(oldComments.n) > 8 || Number(zhCommentN.n) < 80 || Number(newStyleHit.n) === 0
+  if (!needNames && !needComments) return false
+
+  const now = new Date().toISOString()
+  const insC = db.prepare(
+    `INSERT OR IGNORE INTO comment_templates (id, locale, body, enabled, use_count, created_at, surface)
+     VALUES (?, ?, ?, 1, 0, ?, ?)`,
+  )
+  const insN = db.prepare(
+    `INSERT OR IGNORE INTO display_name_pool (id, locale, name, normalized, used_by_account_id, created_at)
+     VALUES (?, ?, ?, ?, NULL, ?)`,
+  )
+
+  db.exec('BEGIN')
+  try {
+    if (needNames) {
+      db.exec(`DELETE FROM display_name_pool WHERE locale = 'zh'`)
+      for (const name of generateDisplayNames('zh', 360)) {
+        insN.run(nameId('zh', name), 'zh', name, normalizeName(name), now)
+      }
+    }
+    if (needComments) {
+      db.exec(`DELETE FROM comment_templates WHERE locale = 'zh'`)
+      generateComments('zh', 360).forEach((body, idx) => {
+        insC.run(commentId('zh', body, idx), 'zh', body, now, 'character')
+      })
+      generateExploreComments('zh', 220).forEach((body, idx) => {
+        insC.run(exploreCommentId('zh', body, idx), 'zh', body, now, 'explore')
+      })
+    }
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+
+  appendConsoleLog({
+    level: 'info',
+    action: 'seed',
+    message: `中文文案库已换成混合风格（${ZH_COPY_STYLE}）：网名重刷 ${needNames ? '是' : '否'} · 评论重刷 ${needComments ? '是' : '否'}`,
+  })
+  return true
+}
+
 export function ensureCopyLibrariesSeeded(): { comments: number; names: number; seeded: boolean } {
   const db = openAccountsDb()
+  const zhRefreshed = refreshZhCopyPools(db)
   const nRow = db.prepare('SELECT COUNT(*) AS n FROM display_name_pool').get() as { n: number }
   const digitRow = db
     .prepare(`SELECT COUNT(*) AS n FROM display_name_pool WHERE name GLOB '*[0-9]*'`)
@@ -110,7 +181,7 @@ export function ensureCopyLibrariesSeeded(): { comments: number; names: number; 
     return {
       comments: Number(charCount.n) + Number(exploreCount.n),
       names: Number(nRow.n),
-      seeded: false,
+      seeded: zhRefreshed,
     }
   }
 
@@ -309,12 +380,15 @@ export function pickComment(
   return { ok: true, id: row.id, body }
 }
 
-export function upsertCharacters(items: ListingItem[]) {
+export function upsertCharacters(
+  items: ListingItem[],
+  feed: 'latest' | 'popular_week' | 'explore_recommended' | 'explore_popular' | 'explore_popularity' | '',
+) {
   const db = openAccountsDb()
   const now = new Date().toISOString()
   const stmt = db.prepare(`
-    INSERT INTO characters (listing_id, asset_id, title, first_seen_at, last_seen_at, raw_json, listing_kind)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO characters (listing_id, asset_id, title, first_seen_at, last_seen_at, raw_json, listing_kind, feed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(listing_id) DO UPDATE SET
       asset_id = excluded.asset_id,
       title = excluded.title,
@@ -324,13 +398,14 @@ export function upsertCharacters(items: ListingItem[]) {
         WHEN excluded.listing_kind = 'character' THEN 'character'
         WHEN characters.listing_kind = 'character' THEN 'character'
         ELSE excluded.listing_kind
-      END
+      END,
+      feed = excluded.feed
   `)
   let inserted = 0
   for (const it of items) {
-    const exists = db.prepare(`SELECT listing_id FROM characters WHERE listing_id = ?`).get(it.listing_id)
+    const exists = db.prepare('SELECT listing_id FROM characters WHERE listing_id = ?').get(it.listing_id)
     const kind = it.listing_kind === 'explore' ? 'explore' : 'character'
-    stmt.run(it.listing_id, it.asset_id, it.title, now, now, JSON.stringify(it.raw), kind)
+    stmt.run(it.listing_id, it.asset_id, it.title, now, now, JSON.stringify(it.raw), kind, feed)
     if (!exists) inserted++
   }
   return { upserted: items.length, inserted }
@@ -583,6 +658,42 @@ function updateAction(
   )
 }
 
+function jitterRate(base: number, noise: number, min = 0.08, max = 0.98) {
+  const v = base + (Math.random() * 2 - 1) * noise
+  return Math.min(max, Math.max(min, v))
+}
+
+function isFreshListing(feed?: string | null, firstSeenAt?: string | null) {
+  const f = String(feed || '')
+  if (f === 'latest' || f === 'explore_recommended') return true
+  if (f === 'popular_week' || f === 'explore_popular' || f === 'explore_popularity') return false
+  const seen = Date.parse(String(firstSeenAt || ''))
+  if (!Number.isFinite(seen)) return false
+  return Date.now() - seen < 36 * 60 * 60 * 1000
+}
+
+function pickEngageRates(opts: { boost: boolean; isNew: boolean }) {
+  if (opts.boost) {
+    return {
+      likeRate: 1,
+      commentRate: jitterRate(0.7, 0.04, 0.62, 0.78),
+      label: '重点作者',
+    }
+  }
+  if (opts.isNew) {
+    return {
+      likeRate: jitterRate(0.8, 0.06, 0.7, 0.9),
+      commentRate: jitterRate(0.55, 0.08, 0.42, 0.68),
+      label: '新发布',
+    }
+  }
+  return {
+    likeRate: jitterRate(0.55, 0.06, 0.45, 0.65),
+    commentRate: jitterRate(0.36, 0.07, 0.28, 0.48),
+    label: '热门',
+  }
+}
+
 /** 取一条 pending：失败优先 → 未有站内评论的角色优先 → 换号 → 随机 */
 export async function runEngageStep(input: {
   accounts: EngageAccount[]
@@ -590,7 +701,6 @@ export async function runEngageStep(input: {
   rateMin?: number
   rateMax?: number
 }): Promise<EngageStepResult> {
-  ensureCopyLibrariesSeeded()
   const byId = new Map(input.accounts.map((a) => [a.id, a]))
   const db = openAccountsDb()
 
@@ -602,52 +712,60 @@ export async function runEngageStep(input: {
     title: string | null
     char_asset: string | null
     listing_kind: string | null
+    feed: string | null
+    first_seen_at: string | null
   }
 
   const claimPending = (excludeAccountIds: string[]): PendingRow | undefined => {
     const exclude = excludeAccountIds.filter(Boolean)
+    const selectCols = `SELECT a.account_id, a.listing_id, a.asset_id, a.fail_count, c.title, c.asset_id AS char_asset,
+                    COALESCE(c.listing_kind, 'character') AS listing_kind,
+                    COALESCE(c.feed, '') AS feed,
+                    c.first_seen_at
+             FROM account_character_actions a
+             LEFT JOIN characters c ON c.listing_id = a.listing_id`
     db.exec('BEGIN IMMEDIATE')
     try {
+      const pick = (sql: string, params: unknown[]) =>
+        db.prepare(sql).get(...params) as PendingRow | undefined
+
       let row: PendingRow | undefined
       if (exclude.length) {
         const ph = exclude.map(() => '?').join(',')
-        row = db
-          .prepare(
-            `SELECT a.account_id, a.listing_id, a.asset_id, a.fail_count, c.title, c.asset_id AS char_asset,
-                    COALESCE(c.listing_kind, 'character') AS listing_kind
-             FROM account_character_actions a
-             LEFT JOIN characters c ON c.listing_id = a.listing_id
-             WHERE a.decision = 'pending'
-               AND (a.fail_count > 0 OR a.account_id NOT IN (${ph}))
-             ORDER BY
-               CASE WHEN a.fail_count > 0 THEN 0 ELSE 1 END,
-               CASE WHEN (
-                 SELECT COUNT(*) FROM account_character_actions x
-                 WHERE x.listing_id = a.listing_id AND x.decision = 'commented'
-               ) = 0 THEN 0 ELSE 1 END,
-               RANDOM()
+        row = pick(
+          `${selectCols}
+           WHERE a.decision = 'pending' AND a.fail_count > 0 AND a.account_id NOT IN (${ph})
+           ORDER BY a.updated_at
+           LIMIT 1`,
+          exclude,
+        )
+        if (!row) {
+          row = pick(
+            `${selectCols}
+             WHERE a.decision = 'pending' AND a.account_id NOT IN (${ph})
+             ORDER BY a.updated_at
              LIMIT 1`,
+            exclude,
           )
-          .get(...exclude) as PendingRow | undefined
+        }
       }
       if (!row) {
-        row = db
-          .prepare(
-            `SELECT a.account_id, a.listing_id, a.asset_id, a.fail_count, c.title, c.asset_id AS char_asset,
-                    COALESCE(c.listing_kind, 'character') AS listing_kind
-             FROM account_character_actions a
-             LEFT JOIN characters c ON c.listing_id = a.listing_id
-             WHERE a.decision = 'pending'
-             ORDER BY
-               CASE WHEN a.fail_count > 0 THEN 0 ELSE 1 END,
-               CASE WHEN (
-                 SELECT COUNT(*) FROM account_character_actions x
-                 WHERE x.listing_id = a.listing_id AND x.decision = 'commented'
-               ) = 0 THEN 0 ELSE 1 END,
-               RANDOM()
-             LIMIT 1`,
-          )
-          .get() as PendingRow | undefined
+        row = pick(
+          `${selectCols}
+           WHERE a.decision = 'pending' AND a.fail_count > 0
+           ORDER BY a.updated_at
+           LIMIT 1`,
+          [],
+        )
+      }
+      if (!row) {
+        row = pick(
+          `${selectCols}
+           WHERE a.decision = 'pending'
+           ORDER BY a.updated_at
+           LIMIT 1`,
+          [],
+        )
       }
       if (!row) {
         db.exec('COMMIT')
@@ -708,28 +826,24 @@ export async function runEngageStep(input: {
     return { ok: false, action: 'give_up', error: '缺少 pubasset_id', listingId: row.listing_id }
   }
 
-  const rateMin = Math.min(0.8, Math.max(0.5, input.rateMin ?? 0.5))
-  const rateMax = Math.min(0.8, Math.max(rateMin, input.rateMax ?? 0.8))
-  let engageRate = rateMin + Math.random() * (rateMax - rateMin)
   const title = row.title || row.listing_id
-  // 重点作者作品：稳定更高参与率 70%–80%
-  if (isBoostCreatorTitle(title)) {
-    engageRate = 0.7 + Math.random() * 0.1
-  }
+  const boost = isBoostCreatorTitle(title)
+  const isNew = isFreshListing(row.feed, row.first_seen_at)
+  const { likeRate: engageRate, commentRate, label: rateLabel } = pickEngageRates({ boost, isNew })
   const who = engageLogName(account)
 
   if (Math.random() > engageRate) {
     updateAction(row.account_id, row.listing_id, {
       decision: 'skipped',
       assetId,
-      skipReason: isBoostCreatorTitle(title) ? 'random_sample_boost' : 'random_sample',
+      skipReason: boost ? 'random_sample_boost' : isNew ? 'random_sample_new' : 'random_sample',
     })
     appendConsoleLog({
       level: 'info',
       action: 'skip',
       accountEmail: who,
       listingId: row.listing_id,
-      message: `跳过「${title}」（抽样 ${(engageRate * 100).toFixed(0)}%${isBoostCreatorTitle(title) ? ' · 重点作者' : ''}）`,
+      message: `跳过「${title}」（${rateLabel} · 赞 ${(engageRate * 100).toFixed(0)}%）`,
     })
     return {
       ok: true,
@@ -797,15 +911,14 @@ export async function runEngageStep(input: {
     message: `已点赞「${title}」`,
   })
 
-  // 点赞成功后：仅 40%–50% 再发评论（非百分百）
-  const commentRate = 0.4 + Math.random() * 0.1
+  // 点赞成功后再按档位抽评论（热门约 50赞:18评；新发布更高；J哥/Big D 约 70%）
   if (Math.random() > commentRate) {
     appendConsoleLog({
       level: 'info',
       action: 'skip_comment',
       accountEmail: who,
       listingId: row.listing_id,
-      message: `仅点赞「${title}」（评论抽样 ${(commentRate * 100).toFixed(0)}%）`,
+      message: `仅点赞「${title}」（${rateLabel} · 评 ${(commentRate * 100).toFixed(0)}%）`,
     })
     return {
       ok: true,
@@ -976,7 +1089,7 @@ export async function runDiscoveryOnce(input: {
     }
     if (!res.items.length) continue
     okPages++
-    const up = upsertCharacters(res.items)
+    const up = upsertCharacters(res.items, characterSort)
     inserted += up.inserted
     totalItems += res.items.length
     for (const it of res.items) listingIds.push(it.listing_id)
@@ -1025,7 +1138,13 @@ export async function runDiscoveryOnce(input: {
     }
     if (!res.items.length) break
     exploreOkPages++
-    const up = upsertCharacters(res.items)
+    const exploreFeed =
+      exploreSort === 'recommended'
+        ? 'explore_recommended'
+        : exploreSort === 'popularity'
+          ? 'explore_popularity'
+          : 'explore_popular'
+    const up = upsertCharacters(res.items, exploreFeed)
     exploreInserted += up.inserted
     exploreItems += res.items.length
     totalItems += res.items.length

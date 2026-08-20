@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import gsap from 'gsap'
 import { parseAccountLines, maskSecret } from '../lib/parseAccounts'
 import { filterAccounts, useEmailStore } from '../store/emailStore'
@@ -6,6 +6,7 @@ import { resolveOutboundProxy, useSettingsStore } from '../store/settingsStore'
 import { runEmailPageEnter, pulseCodeReveal, prefersReducedMotion } from '../motion/timelines'
 import { runAutoProbe } from '../services/autoProbe'
 import { reloadAccountsFromDisk } from '../services/reloadAccounts'
+import { VirtualAccountGrid } from '../components/VirtualAccountGrid'
 import type { AccountStatus, EmailAccount } from '../types/email'
 
 const STATUS_LABEL: Record<AccountStatus, string> = {
@@ -238,19 +239,65 @@ function DetailDrawer({
   )
 }
 
+const EmailCard = memo(function EmailCard({
+  account,
+  selected,
+  onSelect,
+}: {
+  account: EmailAccount
+  selected: boolean
+  onSelect: (id: string) => void
+}) {
+  const labels = account.labels.filter((l) => !/^lovemi(-reg)?$/i.test(l))
+  return (
+    <button
+      type="button"
+      className={`email-card${selected ? ' selected' : ''}`}
+      onClick={() => onSelect(account.id)}
+    >
+      <div className="email-addr">{account.email}</div>
+      <div className="meta-row">
+        <StatusChip status={account.status} />
+        <LovemiRegChip account={account} />
+        <span className="chip pink">{AUTH_LABEL[account.authMode]}</span>
+        {labels.map((l) => (
+          <span key={l} className="chip">
+            {l}
+          </span>
+        ))}
+      </div>
+      {account.lastError ? (
+        <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--muted)', lineHeight: 1.35 }}>
+          {account.lastError.slice(0, 80)}
+        </div>
+      ) : null}
+    </button>
+  )
+})
+
 export function EmailHub() {
   const pageRef = useRef<HTMLElement>(null)
   const [importOpen, setImportOpen] = useState(false)
-  const store = useEmailStore()
+  const accounts = useEmailStore((s) => s.accounts)
+  const query = useEmailStore((s) => s.query)
+  const statusFilter = useEmailStore((s) => s.statusFilter)
+  const view = useEmailStore((s) => s.view)
+  const selectedId = useEmailStore((s) => s.selectedId)
+  const probing = useEmailStore((s) => s.probing)
+  const registering = useEmailStore((s) => s.registering)
+  const setQuery = useEmailStore((s) => s.setQuery)
+  const setStatusFilter = useEmailStore((s) => s.setStatusFilter)
+  const setView = useEmailStore((s) => s.setView)
+  const select = useEmailStore((s) => s.select)
   const settings = useSettingsStore()
   const outbound = resolveOutboundProxy(settings)
-  const list = useMemo(() => filterAccounts(store), [store.accounts, store.query, store.statusFilter])
-  const selected = store.accounts.find((a) => a.id === store.selectedId) ?? null
+  const list = useMemo(() => filterAccounts(accounts, query, statusFilter), [accounts, query, statusFilter])
+  const selected = selectedId ? (accounts.find((a) => a.id === selectedId) ?? null) : null
 
   useEffect(() => {
     if (!pageRef.current) return
     runEmailPageEnter(pageRef.current)
-  }, [store.accounts.length, store.view])
+  }, [])
 
   useEffect(() => {
     void reloadAccountsFromDisk({ silent: true })
@@ -261,21 +308,21 @@ export function EmailHub() {
       <h1 className="page-title">邮箱管理</h1>
       <p className="page-desc">
         导入后自动探活并排队注册 · 出站：{outbound.label}
-        {store.probing ? ' · 探活中' : ''}
-        {store.registering ? ' · 注册队列运行中' : ''}
+        {probing ? ' · 探活中' : ''}
+        {registering ? ' · 注册队列运行中' : ''}
       </p>
 
       <div className="toolbar" data-motion="toolbar">
         <input
           className="field"
           placeholder="搜索邮箱 / 标签 / 备注"
-          value={store.query}
-          onChange={(e) => store.setQuery(e.target.value)}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
         />
         <select
           className="select"
-          value={store.statusFilter}
-          onChange={(e) => store.setStatusFilter(e.target.value as AccountStatus | 'all')}
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as AccountStatus | 'all')}
         >
           <option value="all">全部状态</option>
           {(Object.keys(STATUS_LABEL) as AccountStatus[]).map((s) => (
@@ -284,59 +331,31 @@ export function EmailHub() {
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => store.setView(store.view === 'cards' ? 'table' : 'cards')}
-        >
-          {store.view === 'cards' ? '表格视图' : '卡片视图'}
+        <button type="button" className="btn" onClick={() => setView(view === 'cards' ? 'table' : 'cards')}>
+          {view === 'cards' ? '表格视图' : '卡片视图'}
         </button>
         <button type="button" className="btn btn-primary" onClick={() => setImportOpen(true)}>
           导入账号
         </button>
         <div className="stats">
-          显示 {list.length} / 共 {store.accounts.length}
+          显示 {list.length} / 共 {accounts.length}
         </div>
       </div>
 
-      {store.view === 'cards' ? (
-        <div className="card-grid">
-          {list.length === 0 ? (
-            <div className="empty">
-              <strong>还没有账号</strong>
-              点击「导入账号」粘贴你自有测试邮箱，导入后会自动探活并串行注册 Lovemi。
-            </div>
-          ) : (
-            list.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                className={`email-card${selected?.id === a.id ? ' selected' : ''}`}
-                data-motion="card"
-                onClick={() => store.select(a.id)}
-              >
-                <div className="email-addr">{a.email}</div>
-                <div className="meta-row">
-                  <StatusChip status={a.status} />
-                  <LovemiRegChip account={a} />
-                  <span className="chip pink">{AUTH_LABEL[a.authMode]}</span>
-                  {a.labels
-                    .filter((l) => !/^lovemi(-reg)?$/i.test(l))
-                    .map((l) => (
-                      <span key={l} className="chip">
-                        {l}
-                      </span>
-                    ))}
-                </div>
-                {a.lastError ? (
-                  <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--muted)', lineHeight: 1.35 }}>
-                    {a.lastError.slice(0, 80)}
-                  </div>
-                ) : null}
-              </button>
-            ))
-          )}
-        </div>
+      {view === 'cards' ? (
+        list.length === 0 ? (
+          <div className="empty">
+            <strong>还没有账号</strong>
+            点击「导入账号」粘贴你自有测试邮箱，导入后会自动探活并串行注册 Lovemi。
+          </div>
+        ) : (
+          <VirtualAccountGrid
+            items={list}
+            renderItem={(a) => (
+              <EmailCard account={a} selected={a.id === selectedId} onSelect={select} />
+            )}
+          />
+        )
       ) : (
         <div className="table-wrap">
           <table className="email-table">
@@ -351,7 +370,7 @@ export function EmailHub() {
             </thead>
             <tbody>
               {list.map((a) => (
-                <tr key={a.id} onClick={() => store.select(a.id)}>
+                <tr key={a.id} onClick={() => select(a.id)}>
                   <td>{a.email}</td>
                   <td>
                     <StatusChip status={a.status} />
@@ -360,9 +379,7 @@ export function EmailHub() {
                     <LovemiRegChip account={a} />
                   </td>
                   <td>{AUTH_LABEL[a.authMode]}</td>
-                  <td>
-                    {a.labels.filter((l) => !/^lovemi(-reg)?$/i.test(l)).join(', ') || '—'}
-                  </td>
+                  <td>{a.labels.filter((l) => !/^lovemi(-reg)?$/i.test(l)).join(', ') || '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -370,7 +387,7 @@ export function EmailHub() {
         </div>
       )}
 
-      <DetailDrawer account={selected} onClose={() => store.select(null)} />
+      <DetailDrawer account={selected} onClose={() => select(null)} />
       <ImportModal open={importOpen} onClose={() => setImportOpen(false)} />
     </section>
   )

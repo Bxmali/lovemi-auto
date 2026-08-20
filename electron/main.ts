@@ -52,10 +52,12 @@ const isDev = !app.isPackaged
 const APP_DATA = path.join(app.getPath('appData'), 'lovemi-auto')
 app.setPath('userData', APP_DATA)
 app.setName('Lovemi Auto')
-// macOS + Electron 43 在部分机器上会频繁触发 GPU 进程退出（表现为窗口闪退/闪烁重启）。
-// 关闭硬件加速可显著提升稳定性，优先保证不闪退。
-app.disableHardwareAcceleration()
-app.commandLine.appendSwitch('disable-gpu')
+// macOS + Electron 43 在部分机器上会频繁触发 GPU 进程退出（窗口闪退）。
+// Windows 有独显时关 GPU 会让 200+ 账号列表明显卡顿，仅在 Darwin 关闭硬件加速。
+if (process.platform === 'darwin') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu')
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -125,8 +127,19 @@ function createWindow() {
     minHeight: 640,
     backgroundColor: '#0b0b0d',
     title: 'Lovemi Auto',
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 16, y: 16 },
+        }
+      : {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: '#0b0b0d',
+            symbolColor: '#f5a3c7',
+            height: 40,
+          },
+        }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
@@ -148,7 +161,11 @@ function createWindow() {
     recoverMainWindow(`render-process-gone:${details.reason}`)
   })
   mainWindow.webContents.on('unresponsive', () => {
-    recoverMainWindow('unresponsive')
+    appendConsoleLog({
+      level: 'warn',
+      action: 'ui',
+      message: '窗口暂时无响应（主进程正在处理互动队列，已保留窗口不强制重启）',
+    })
   })
 }
 

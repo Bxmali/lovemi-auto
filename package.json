@@ -7,8 +7,8 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "env -u ELECTRON_RUN_AS_NODE vite",
-    "build": "env -u ELECTRON_RUN_AS_NODE vite build",
+    "dev": "node scripts/run-without-electron-node.mjs",
+    "build": "node scripts/run-without-electron-node.mjs build",
     "typecheck": "tsc -b --pretty false",
     "typecheck:electron": "tsc -p tsconfig.electron.json --pretty false",
     "lint": "oxlint",

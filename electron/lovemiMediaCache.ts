@@ -79,40 +79,53 @@ export async function applyPinkOfficialWatermark(input: {
     if (input.noWatermark) args.push('--no-watermark')
 
     const timeoutMs = isVideo ? 420_000 : 90_000
+    const pythonBins =
+      process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python']
     const run = await new Promise<{
       code: number | null
       stdout: string
       stderr: string
       timedOut: boolean
     }>((resolve) => {
-      const child = spawn('python3', args, { stdio: ['ignore', 'pipe', 'pipe'] })
-      let stdout = ''
-      let stderr = ''
-      let timedOut = false
-      const timer = setTimeout(() => {
-        timedOut = true
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          /* ignore */
-        }
-      }, timeoutMs)
-      child.stdout.on('data', (chunk: Buffer | string) => {
-        stdout += String(chunk)
-        if (stdout.length > 8 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024)
-      })
-      child.stderr.on('data', (chunk: Buffer | string) => {
-        stderr += String(chunk)
-        if (stderr.length > 8 * 1024 * 1024) stderr = stderr.slice(-2 * 1024 * 1024)
-      })
-      child.on('error', (err) => {
-        clearTimeout(timer)
-        resolve({ code: 1, stdout, stderr: err.message, timedOut })
-      })
-      child.on('close', (code) => {
-        clearTimeout(timer)
-        resolve({ code, stdout, stderr, timedOut })
-      })
+      const spawnPython = (binIndex: number) => {
+        const bin = pythonBins[binIndex]
+        const child = spawn(bin, process.platform === 'win32' && bin === 'py' ? ['-3', ...args] : args, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        })
+        let stdout = ''
+        let stderr = ''
+        let timedOut = false
+        const timer = setTimeout(() => {
+          timedOut = true
+          try {
+            child.kill()
+          } catch {
+            /* ignore */
+          }
+        }, timeoutMs)
+        child.stdout.on('data', (chunk: Buffer | string) => {
+          stdout += String(chunk)
+          if (stdout.length > 8 * 1024 * 1024) stdout = stdout.slice(-2 * 1024 * 1024)
+        })
+        child.stderr.on('data', (chunk: Buffer | string) => {
+          stderr += String(chunk)
+          if (stderr.length > 8 * 1024 * 1024) stderr = stderr.slice(-2 * 1024 * 1024)
+        })
+        child.on('error', (err) => {
+          clearTimeout(timer)
+          if (binIndex + 1 < pythonBins.length) {
+            spawnPython(binIndex + 1)
+            return
+          }
+          resolve({ code: 1, stdout, stderr: err.message, timedOut })
+        })
+        child.on('close', (code) => {
+          clearTimeout(timer)
+          resolve({ code, stdout, stderr, timedOut })
+        })
+      }
+      spawnPython(0)
     })
 
     if (

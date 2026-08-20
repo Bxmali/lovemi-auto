@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { LOCALES, type LocaleCode } from './locales'
+import { generateZhExploreComments } from './zhCopyPools'
 
 type Frag = { hooks: string[]; mids: string[]; tails: string[] }
 
@@ -195,6 +196,7 @@ function uniqPush(set: Set<string>, arr: string[], v: string, max: number) {
 }
 
 export function generateExploreComments(locale: LocaleCode, count = 200): string[] {
+  if (locale === 'zh') return generateZhExploreComments(Math.max(count, 200))
   const frag = EXPLORE_COMMENT_FRAG[locale]
   const out: string[] = []
   const seen = new Set<string>()
@@ -246,7 +248,7 @@ export function exploreCommentId(locale: LocaleCode, body: string, index: number
 export function buildExploreCopySeed() {
   const comments: Array<{ id: string; locale: LocaleCode; body: string; surface: 'explore' }> = []
   for (const locale of LOCALES) {
-    const bodies = generateExploreComments(locale, 200)
+    const bodies = generateExploreComments(locale, locale === 'zh' ? 220 : 200)
     bodies.forEach((body, idx) =>
       comments.push({ id: exploreCommentId(locale, body, idx), locale, body, surface: 'explore' }),
     )

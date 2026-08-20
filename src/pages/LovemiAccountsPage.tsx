@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect, useState } from 'react'
+import { useMemo, useRef, useEffect, useState, memo } from 'react'
 import { useEmailStore } from '../store/emailStore'
 import { resolveOutboundProxy, useSettingsStore } from '../store/settingsStore'
 import { enqueueLovemiRegister, getRegisterQueueLength } from '../services/lovemiRegister'
@@ -9,6 +9,7 @@ import { runEmailPageEnter } from '../motion/timelines'
 import type { EmailAccount, LovemiRegStatus } from '../types/email'
 import { maskSecret } from '../lib/parseAccounts'
 import { localeLabel } from '../lib/locales'
+import { VirtualAccountGrid } from '../components/VirtualAccountGrid'
 
 const REG_LABEL: Record<LovemiRegStatus, string> = {
   none: '未注册',
@@ -64,6 +65,37 @@ function DisplayNameChip({ account }: { account: EmailAccount }) {
   )
 }
 
+const LovemiCard = memo(function LovemiCard({
+  account,
+  selected,
+  onSelect,
+}: {
+  account: EmailAccount
+  selected: boolean
+  onSelect: (id: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`email-card${selected ? ' selected' : ''}`}
+      onClick={() => onSelect(account.id)}
+    >
+      <div className="email-addr">{account.email}</div>
+      <div className="meta-row">
+        <LovemiChip account={account} />
+        <BearerChip account={account} />
+        <LocaleChip account={account} />
+        <DisplayNameChip account={account} />
+      </div>
+      {account.lovemiRegError ? (
+        <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--danger)', lineHeight: 1.35 }}>
+          {account.lovemiRegError.slice(0, 120)}
+        </div>
+      ) : null}
+    </button>
+  )
+})
+
 export function LovemiAccountsPage() {
   const pageRef = useRef<HTMLElement>(null)
   const accounts = useEmailStore((s) => s.accounts)
@@ -79,25 +111,29 @@ export function LovemiAccountsPage() {
     () => accounts.filter((a) => !a.id.startsWith('demo-') && !a.email.endsWith('@example.com')),
     [accounts],
   )
-  const selected = list.find((a) => a.id === selectedId) ?? null
-  const unregistered = list.filter((a) => !a.lovemiRegistered)
-  const registered = list.filter((a) => a.lovemiRegistered)
+  const selected = selectedId ? (list.find((a) => a.id === selectedId) ?? null) : null
+  const unregistered = useMemo(() => list.filter((a) => !a.lovemiRegistered).length, [list])
+  const registered = useMemo(() => list.filter((a) => a.lovemiRegistered).length, [list])
   const queued = getRegisterQueueLength()
-  const named = list.filter(
-    (a) => a.lovemiProfileReady && a.lovemiDisplayName && !/\d/.test(a.lovemiDisplayName),
-  ).length
+  const named = useMemo(
+    () =>
+      list.filter(
+        (a) => a.lovemiProfileReady && a.lovemiDisplayName && !/\d/.test(a.lovemiDisplayName),
+      ).length,
+    [list],
+  )
+  const bearerN = useMemo(() => list.filter((a) => a.lovemiSessionToken).length, [list])
 
   useEffect(() => {
     if (!pageRef.current) return
     runEmailPageEnter(pageRef.current)
-  }, [list.length, view])
+  }, [])
 
   return (
     <section className="email-page" ref={pageRef}>
       <h1 className="page-title">Lovemi 账号管理</h1>
       <p className="page-desc">
-        串行注册队列（限流自动等待）· {outbound.label} · 未注册 {unregistered.length} / 已注册{' '}
-        {registered.length}
+        串行注册队列（限流自动等待）· {outbound.label} · 未注册 {unregistered} / 已注册 {registered}
         {registering || queued > 0 ? ` · 队列 ${queued}` : ''}
       </p>
 
@@ -134,45 +170,27 @@ export function LovemiAccountsPage() {
           {view === 'cards' ? '表格视图' : '卡片视图'}
         </button>
         <div className="stats">
-          Bearer {list.filter((a) => a.lovemiSessionToken).length}/{registered.length} · 已创建用户名{' '}
-          {named}/{list.filter((a) => a.lovemiSessionToken).length}
+          Bearer {bearerN}/{registered} · 已创建用户名 {named}/{bearerN}
         </div>
       </div>
 
       {view === 'cards' ? (
-        <div className="card-grid">
-          {list.length === 0 ? (
-            <div className="empty">
-              <strong>还没有真实邮箱</strong>
-              请先在「邮箱管理」导入，系统会自动探活并排队注册。
-            </div>
-          ) : (
-            list.map((a) => (
-              <button
-                key={a.id}
-                type="button"
-                className={`email-card${selected?.id === a.id ? ' selected' : ''}`}
-                data-motion="card"
-                onClick={() => select(a.id)}
-              >
-                <div className="email-addr">{a.email}</div>
-                <div className="meta-row">
-                  <LovemiChip account={a} />
-                  <BearerChip account={a} />
-                  <LocaleChip account={a} />
-                  <DisplayNameChip account={a} />
-                </div>
-                {a.lovemiRegError ? (
-                  <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--danger)', lineHeight: 1.35 }}>
-                    {a.lovemiRegError.slice(0, 120)}
-                  </div>
-                ) : null}
-              </button>
-            ))
-          )}
-        </div>
+        list.length === 0 ? (
+          <div className="empty">
+            <strong>还没有真实邮箱</strong>
+            请先在「邮箱管理」导入，系统会自动探活并排队注册。
+          </div>
+        ) : (
+          <VirtualAccountGrid
+            items={list}
+            estimateSize={120}
+            renderItem={(a) => (
+              <LovemiCard account={a} selected={a.id === selectedId} onSelect={select} />
+            )}
+          />
+        )
       ) : (
-        <div className="table-wrap" data-motion="card">
+        <div className="table-wrap">
           <table className="email-table">
             <thead>
               <tr>

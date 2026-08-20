@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState, memo, useCallback, useMemo } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useEffect, useRef, useState, memo, useMemo } from 'react'
 import { useConsoleStore, type ConsoleLogRow } from '../store/consoleStore'
 import { useEmailStore } from '../store/emailStore'
 import { assignLocalesAndRename } from '../services/profileLocale'
@@ -36,8 +35,17 @@ const LogRow = memo(function LogRow({ row }: { row: ConsoleLogRow }) {
 
 export function ConsolePage() {
   const pageRef = useRef<HTMLElement>(null)
-  const parentRef = useRef<HTMLDivElement>(null)
-  const accounts = useEmailStore((s) => s.accounts)
+  const bearerReady = useEmailStore((s) => {
+    let bearer = 0
+    let ready = 0
+    for (const a of s.accounts) {
+      if (a.id.startsWith('demo-') || a.email.endsWith('@example.com') || !a.lovemiSessionToken) continue
+      bearer++
+      if (a.lovemiProfileReady) ready++
+    }
+    return `${bearer}:${ready}`
+  })
+  const [withBearer, profileReady] = bearerReady.split(':').map(Number)
   const setToast = useEmailStore((s) => s.setToast)
   const autoEngage = useConsoleStore((s) => s.autoEngage)
   const setAutoEngage = useConsoleStore((s) => s.setAutoEngage)
@@ -48,8 +56,10 @@ export function ConsolePage() {
   const setRenaming = useConsoleStore((s) => s.setRenaming)
   const allLogs = useConsoleStore((s) => s.logs)
   // 拉人/互动控制台只显示互动相关日志；创建角色有自己的三槽步骤日志。
-  const logs = useMemo(() => allLogs.filter((row) => row.action !== 'create_char'), [allLogs])
-  const newestLogId = logs[0]?.id
+  const logs = useMemo(
+    () => allLogs.filter((row) => row.action !== 'create_char').slice(0, 20),
+    [allLogs],
+  )
   const stats = useConsoleStore((s) => s.stats)
   const failStreak = useConsoleStore((s) => s.failStreak)
   const gapMinMs = useConsoleStore((s) => s.gapMinMs)
@@ -59,20 +69,7 @@ export function ConsolePage() {
   const refreshLogs = useConsoleStore((s) => s.refreshLogs)
   const refreshStats = useConsoleStore((s) => s.refreshStats)
   const clearLogs = useConsoleStore((s) => s.clearLogs)
-  const [followTail, setFollowTail] = useState(true)
   const [stepBusy, setStepBusy] = useState(false)
-
-  const withBearer = accounts.filter(
-    (a) => !a.id.startsWith('demo-') && !a.email.endsWith('@example.com') && a.lovemiSessionToken,
-  )
-  const profileReady = withBearer.filter((a) => a.lovemiProfileReady).length
-
-  const virtualizer = useVirtualizer({
-    count: logs.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 44,
-    overscan: 12,
-  })
 
   useEffect(() => {
     if (!pageRef.current) return
@@ -82,22 +79,14 @@ export function ConsolePage() {
   useEffect(() => {
     void refreshLogs()
     void refreshStats()
-    // 日志 5s、统计 12s，减轻 IPC + 重绘
-    const logTimer = window.setInterval(() => void refreshLogs(), 5_000)
-    const statsTimer = window.setInterval(() => void refreshStats(), 12_000)
+    // 日志 8s、统计 15s；互动循环另有 2s 节流刷新
+    const logTimer = window.setInterval(() => void refreshLogs(), 8_000)
+    const statsTimer = window.setInterval(() => void refreshStats(), 15_000)
     return () => {
       window.clearInterval(logTimer)
       window.clearInterval(statsTimer)
     }
   }, [refreshLogs, refreshStats])
-
-  useEffect(() => {
-    if (!followTail || !logs.length) return
-    const el = parentRef.current
-    if (!el) return
-    // 仅贴底，不用 smooth（高频日志会卡）
-    el.scrollTop = 0
-  }, [newestLogId, followTail, logs.length])
 
   useEffect(() => {
     if (!autoEngage) return
@@ -181,24 +170,18 @@ export function ConsolePage() {
     }
   }
 
-  const onScroll = useCallback(() => {
-    const el = parentRef.current
-    if (!el) return
-    // 列表最新在顶：离开顶部则取消跟随
-    if (el.scrollTop > 48 && followTail) setFollowTail(false)
-  }, [followTail])
-
   const today = stats?.today
 
   return (
     <section className="email-page" ref={pageRef}>
       <h1 className="page-title">控制台</h1>
       <p className="page-desc">
-        发现并行多页 → 50–80% 抽样（<strong>J哥 / Big D 70–80%</strong>）→ 点赞 →{' '}
+        发现并行多页 → 新发布赞~80%/评~55% · 热门赞~55%/评~36%（带噪声）→{' '}
+        <strong>J哥 / Big D 赞 100% · 评 ~70%</strong> → 点赞后{' '}
         <strong>评论强制随机换号</strong> · <strong>{engageConcurrency} 路并发</strong> · 间隔{' '}
         {Math.round(gapMinMs / 100) / 10}–{Math.round(gapMaxMs / 100) / 10}s · 发现每{' '}
         {Math.round(discoverEveryMs / 60000)} 分钟 · 退出即停 ·
-        Bearer {withBearer.length} · 已改名 {profileReady}
+        Bearer {withBearer} · 已改名 {profileReady}
         {engaging ? ' · 互动中' : ''}
         {failStreak > 0 ? ` · 连续失败 ${failStreak}` : ''}
       </p>
@@ -233,15 +216,6 @@ export function ConsolePage() {
         <button type="button" className="btn" onClick={() => void clearLogs()}>
           清空日志
         </button>
-        <label className="chip" style={{ cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={followTail}
-            onChange={(e) => setFollowTail(e.target.checked)}
-            style={{ marginRight: 6 }}
-          />
-          跟随最新
-        </label>
       </div>
 
       <div
@@ -283,19 +257,14 @@ export function ConsolePage() {
         </div>
       </div>
 
-      <div className="settings-card" data-motion="card" style={{ marginTop: 12 }}>
-        <div className="settings-card-head">实时日志（虚拟列表 · 最近 {logs.length} 条）</div>
+      <div className="settings-card" style={{ marginTop: 12 }}>
+        <div className="settings-card-head">实时日志（最新 {logs.length} 条）</div>
         <div
-          ref={parentRef}
           className="console-log"
-          onScroll={onScroll}
           style={{
-            maxHeight: 420,
-            overflow: 'auto',
             fontFamily: 'ui-monospace, monospace',
             fontSize: '0.75rem',
             lineHeight: 1.45,
-            position: 'relative',
           }}
         >
           {logs.length === 0 ? (
@@ -303,32 +272,7 @@ export function ConsolePage() {
               暂无日志 · 开启自动互动或点「立即发现 / 手动互动 1 步」
             </div>
           ) : (
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: '100%',
-                position: 'relative',
-              }}
-            >
-              {virtualizer.getVirtualItems().map((vRow) => {
-                const row = logs[vRow.index]
-                if (!row) return null
-                return (
-                  <div
-                    key={row.id}
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '100%',
-                      transform: `translateY(${vRow.start}px)`,
-                    }}
-                  >
-                    <LogRow row={row} />
-                  </div>
-                )
-              })}
-            </div>
+            logs.map((row) => <LogRow key={row.id} row={row} />)
           )}
         </div>
       </div>

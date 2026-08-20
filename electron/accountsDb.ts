@@ -60,6 +60,8 @@ export function openAccountsDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_actions_decision ON account_character_actions(decision);
     CREATE INDEX IF NOT EXISTS idx_actions_pending ON account_character_actions(decision, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_actions_liked_at ON account_character_actions(liked_at);
+    CREATE INDEX IF NOT EXISTS idx_actions_commented_at ON account_character_actions(commented_at);
 
     CREATE TABLE IF NOT EXISTS comment_templates (
       id TEXT PRIMARY KEY,
@@ -100,6 +102,9 @@ function migrateConsoleSchema(database: DatabaseSync) {
   const charCols = database.prepare(`PRAGMA table_info(characters)`).all() as Array<{ name: string }>
   if (!charCols.some((c) => c.name === 'listing_kind')) {
     database.exec(`ALTER TABLE characters ADD COLUMN listing_kind TEXT NOT NULL DEFAULT 'character'`)
+  }
+  if (!charCols.some((c) => c.name === 'feed')) {
+    database.exec(`ALTER TABLE characters ADD COLUMN feed TEXT NOT NULL DEFAULT ''`)
   }
   const cmtCols = database.prepare(`PRAGMA table_info(comment_templates)`).all() as Array<{ name: string }>
   if (!cmtCols.some((c) => c.name === 'surface')) {
@@ -143,12 +148,22 @@ export function loadAccountsJson(): string | null {
     payload: string
   }>
   if (!rows.length) {
-    // 首次：尝试从 accounts.enc 迁移
+    // 首次：本机 enc → 仓库 backups/ 明文（Mac→Windows 换机时 enc 解不开）
     const migrated = migrateFromEncIfNeeded()
-    if (migrated === null) return null
-    return migrated
+    if (migrated !== null) return migrated
+    const fromRepo = migrateFromRepoBackupIfNeeded()
+    if (fromRepo !== null) return fromRepo
+    return null
   }
-  const accounts = rows.map((r) => JSON.parse(decryptField(r.payload)))
+  const accounts: unknown[] = []
+  for (const r of rows) {
+    try {
+      accounts.push(JSON.parse(decryptField(r.payload)))
+    } catch {
+      /* 单条损坏不拖垮整库 */
+    }
+  }
+  if (!accounts.length) return null
   return JSON.stringify(accounts)
 }
 
@@ -225,6 +240,61 @@ function writeEncBackup(plaintext: string) {
     fs.writeFileSync(file, safeStorage.encryptString(plaintext))
   } else {
     fs.writeFileSync(file, plaintext, 'utf8')
+  }
+}
+
+function repoBackupRoots(): string[] {
+  return [...new Set([process.cwd(), app.getAppPath(), path.join(app.getAppPath(), '..')])]
+}
+
+function findRepoAccountBackup(): string | null {
+  const files: string[] = []
+  for (const root of repoBackupRoots()) {
+    const dir = path.join(root, 'backups')
+    if (!fs.existsSync(dir)) continue
+    for (const name of fs.readdirSync(dir)) {
+      if (/^accounts-.*\.(array\.)?json$/i.test(name)) {
+        files.push(path.join(dir, name))
+      }
+    }
+  }
+  files.sort((a, b) => {
+    const preferA = a.endsWith('.array.json') ? 1 : 0
+    const preferB = b.endsWith('.array.json') ? 1 : 0
+    if (preferA !== preferB) return preferB - preferA
+    return path.basename(b).localeCompare(path.basename(a))
+  })
+  return files[0] || null
+}
+
+function parseBackupAccounts(raw: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (Array.isArray(parsed)) return parsed
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { accounts?: unknown }).accounts)) {
+      return (parsed as { accounts: unknown[] }).accounts
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+/** 空库时从私有仓库 backups/ 导入明文库存（Windows 无法解密 macOS accounts.enc） */
+function migrateFromRepoBackupIfNeeded(): string | null {
+  const file = findRepoAccountBackup()
+  if (!file) return null
+  try {
+    const accounts = parseBackupAccounts(fs.readFileSync(file, 'utf8'))
+    if (!accounts || accounts.length === 0) return null
+    const plaintext = JSON.stringify(accounts)
+    const result = saveAccountsJson(plaintext)
+    if (!result.ok) return null
+    console.log(`[accounts] imported ${accounts.length} from ${path.basename(file)}`)
+    return plaintext
+  } catch (err) {
+    console.error('[accounts] repo backup import failed', err)
+    return null
   }
 }
 

@@ -36,14 +36,10 @@ export default function App() {
   const [nav, setNav] = useState<NavId>('email')
   const replaceAccounts = useEmailStore((s) => s.replaceAccounts)
   const hydrated = useEmailStore((s) => s.hydrated)
-  const accounts = useEmailStore((s) => s.accounts)
+  const accountCount = useEmailStore((s) => s.accounts.length)
   const toast = useEmailStore((s) => s.toast)
   const toastUntil = useEmailStore((s) => s.toastUntil)
   const setToast = useEmailStore((s) => s.setToast)
-  const persistable = useEmailStore((s) => s.persistable)
-  const probing = useEmailStore((s) => s.probing)
-  const registering = useEmailStore((s) => s.registering)
-  const suspendPersist = useEmailStore((s) => s.suspendPersist)
   const savingRef = useRef(false)
   const idleProbedRef = useRef(false)
   const persistGen = useRef(0)
@@ -62,6 +58,10 @@ export default function App() {
         const raw = await window.lovemi?.loadAccounts()
         if (cancelled) return
         if (!raw) {
+          if (useEmailStore.getState().accounts.length > 0) {
+            setToast('本机库存读取为空，已保留当前列表（未落盘）')
+            return
+          }
           replaceAccounts([])
           return
         }
@@ -74,6 +74,10 @@ export default function App() {
                 labels: (a.labels || []).filter((l) => !/^lovemi(-reg)?$/i.test(String(l))),
               }))
           : []
+        if (!real.length && useEmailStore.getState().accounts.length > 0) {
+          setToast('磁盘读出 0 条，已拒绝用空列表覆盖内存')
+          return
+        }
         // 强制用磁盘覆盖，避免旧内存只剩 1 条把库存写坏
         replaceAccounts(real)
         lastSavedCount.current = real.length
@@ -85,14 +89,27 @@ export default function App() {
             assignLocalesAndRename({ onlyMissing: true, silent: true }),
           )
         }, 4500)
-      } catch {
-        if (!cancelled) replaceAccounts([])
+      } catch (e) {
+        if (!cancelled) {
+          setToast(`库存读取失败：${e instanceof Error ? e.message : String(e)}（未清空列表）`)
+        }
       }
     })()
     return () => {
       cancelled = true
     }
   }, [replaceAccounts])
+
+  // 界面被清空但磁盘仍有号时，自动从本机库存拉回
+  useEffect(() => {
+    if (!hydrated || accountCount > 0 || !window.lovemi?.loadAccounts) return
+    const t = window.setTimeout(() => {
+      if (useEmailStore.getState().accounts.length === 0) {
+        void reloadAccountsFromDisk({ silent: false })
+      }
+    }, 400)
+    return () => window.clearTimeout(t)
+  }, [hydrated, accountCount])
 
   // 库存加载完成后：空闲探活 → 可用未注册入串行队列
   useEffect(() => {
@@ -119,46 +136,55 @@ export default function App() {
   }, [])
 
   // 仅在 hydrate 完成后持久化；探活/注册中 / 暂停落盘时不写
-  // 防缩水：若内存条数远少于上次落盘，拒绝覆盖（避免只剩 1 条写坏库存）
+  // 用 subscribe 而不是订阅 accounts，避免 255 条每次变更都重绘整棵 App（含创建角色页）
   useEffect(() => {
-    if (!window.lovemi || !hydrated || savingRef.current || probing || registering || suspendPersist) return
-    const payload = persistable()
-    // 禁止把非空库存写成空数组
-    if (lastSavedCount.current > 0 && payload.length === 0) {
-      setToast(`已拦截空库存落盘（原有约 ${lastSavedCount.current} 条）`)
-      void reloadAccountsFromDisk({ silent: false })
-      return
-    }
-    if (
-      lastSavedCount.current >= 5 &&
-      payload.length > 0 &&
-      payload.length < Math.max(2, Math.floor(lastSavedCount.current * 0.4))
-    ) {
-      setToast(`已拦截异常缩水落盘（内存 ${payload.length} / 磁盘约 ${lastSavedCount.current}），正在同步磁盘`)
-      void reloadAccountsFromDisk({ silent: false })
-      return
-    }
-    const gen = ++persistGen.current
-    const t = window.setTimeout(() => {
-      if (gen !== persistGen.current) return
-      if (
-        useEmailStore.getState().probing ||
-        useEmailStore.getState().registering ||
-        useEmailStore.getState().suspendPersist
-      )
+    let t: number | undefined
+    const persistNow = () => {
+      if (!window.lovemi || savingRef.current) return
+      const st = useEmailStore.getState()
+      if (!st.hydrated || st.probing || st.registering || st.suspendPersist) return
+      const payload = st.persistable()
+      if (payload.length === 0) {
+        if (lastSavedCount.current > 0) {
+          setToast(`已拦截空库存落盘（原有约 ${lastSavedCount.current} 条）`)
+          void reloadAccountsFromDisk({ silent: false })
+        }
         return
+      }
+      if (
+        lastSavedCount.current >= 5 &&
+        payload.length < Math.max(2, Math.floor(lastSavedCount.current * 0.4))
+      ) {
+        setToast(`已拦截异常缩水落盘（内存 ${payload.length} / 磁盘约 ${lastSavedCount.current}），正在同步磁盘`)
+        void reloadAccountsFromDisk({ silent: false })
+        return
+      }
+      const gen = ++persistGen.current
       savingRef.current = true
       void window.lovemi
-        ?.saveAccounts(JSON.stringify(payload))
-        .then(() => {
+        .saveAccounts(JSON.stringify(payload))
+        .then((res) => {
+          if (gen !== persistGen.current) return
+          if (res && 'ok' in res && res.ok === false) {
+            setToast(res.error || '落盘被拒绝')
+            return
+          }
           lastSavedCount.current = payload.length
         })
         .finally(() => {
           savingRef.current = false
         })
-    }, 800)
-    return () => window.clearTimeout(t)
-  }, [accounts, hydrated, persistable, probing, registering, suspendPersist, setToast])
+    }
+    const unsub = useEmailStore.subscribe((s, prev) => {
+      if (s.accounts === prev.accounts) return
+      window.clearTimeout(t)
+      t = window.setTimeout(persistNow, 2500)
+    })
+    return () => {
+      unsub()
+      window.clearTimeout(t)
+    }
+  }, [setToast])
 
   useEffect(() => {
     if (!toast) return

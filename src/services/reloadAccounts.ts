@@ -12,9 +12,9 @@ export async function reloadAccountsFromDisk(opts?: { silent?: boolean }): Promi
   try {
     const raw = await window.lovemi.loadAccounts()
     if (!raw) {
-      replaceAccounts([])
-      if (!opts?.silent) setToast('本机库存为空')
-      return 0
+      const keep = useEmailStore.getState().accounts.length
+      if (!opts?.silent) setToast(keep ? '磁盘读取为空，已保留当前列表' : '本机库存为空')
+      return keep
     }
     const parsed = JSON.parse(raw) as EmailAccount[]
     const real = Array.isArray(parsed)

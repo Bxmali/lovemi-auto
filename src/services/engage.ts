@@ -102,13 +102,21 @@ export async function drainEngageQueue() {
   store.setEngaging(true)
 
   let refreshChain: Promise<void> = Promise.resolve()
-  const scheduleRefresh = () => {
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined
+  const flushRefresh = () => {
     refreshChain = refreshChain
       .then(async () => {
         await useConsoleStore.getState().refreshStats()
         await useConsoleStore.getState().refreshLogs()
       })
       .catch(() => {})
+  }
+  const scheduleRefresh = () => {
+    if (refreshTimer) return
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined
+      flushRefresh()
+    }, 2000)
   }
 
   const worker = async (workerId: number) => {
@@ -144,13 +152,18 @@ export async function drainEngageQueue() {
   }
 
   try {
-    const n = Math.max(1, Math.min(12, useConsoleStore.getState().engageConcurrency || 3))
+    const n = Math.max(1, Math.min(12, useConsoleStore.getState().engageConcurrency || 8))
     await window.lovemi?.consoleLog?.({
       level: 'info',
       action: 'auto',
       message: `互动并发 ${n} 路 · 间隔 ${Math.round(store.gapMinMs / 1000)}–${Math.round(store.gapMaxMs / 1000)}s`,
     })
     await Promise.all(Array.from({ length: n }, (_, i) => worker(i)))
+    if (refreshTimer) {
+      clearTimeout(refreshTimer)
+      refreshTimer = undefined
+    }
+    flushRefresh()
     await refreshChain
   } finally {
     draining = false

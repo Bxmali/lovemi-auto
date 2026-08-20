@@ -4,6 +4,7 @@ import type { AuthMode, ParsedImportLine } from '../types/email'
  * 支持：
  * - email:password
  * - email:password:refresh_token:client_id
+ * - email:password:recovery@mail:refresh_token:client_id
  * 多行粘贴；忽略空行与 # 注释
  */
 export function parseAccountLines(raw: string): {
@@ -40,10 +41,14 @@ export function parseAccountLines(raw: string): {
     }
 
     if (parts.length >= 4) {
-      // refresh token 本身可能含冒号，取头尾固定字段
+      // refresh token 本身可能含冒号；第三段若是恢复邮箱则跳过
       const password = parts[1]
       const clientId = parts[parts.length - 1]
-      const refreshToken = parts.slice(2, -1).join(':')
+      let tokenStart = 2
+      if (parts.length >= 5 && parts[2]?.includes('@') && !/^M\./i.test(parts[2])) {
+        tokenStart = 3
+      }
+      const refreshToken = parts.slice(tokenStart, -1).join(':')
       const authMode: AuthMode =
         refreshToken && clientId ? 'oauth_graph' : 'password'
       accounts.push({

@@ -373,10 +373,14 @@ export const useEmailStore = create<EmailState>((set, get) => ({
   persistable: () => get().accounts.filter((a) => !isDemoAccount(a)),
 }))
 
-export function filterAccounts(state: EmailState): EmailAccount[] {
-  const q = state.query.trim().toLowerCase()
-  return state.accounts.filter((a) => {
-    if (state.statusFilter !== 'all' && a.status !== state.statusFilter) return false
+export function filterAccounts(
+  accounts: EmailAccount[],
+  query: string,
+  statusFilter: AccountStatus | 'all',
+): EmailAccount[] {
+  const q = query.trim().toLowerCase()
+  return accounts.filter((a) => {
+    if (statusFilter !== 'all' && a.status !== statusFilter) return false
     if (!q) return true
     return (
       a.email.toLowerCase().includes(q) ||

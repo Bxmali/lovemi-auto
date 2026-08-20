@@ -137,6 +137,7 @@ button:disabled {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  padding-top: env(titlebar-area-height, 0px);
   background:
     linear-gradient(180deg, rgba(228, 90, 154, 0.04) 0%, transparent 28%),
     linear-gradient(120deg, transparent 40%, rgba(120, 90, 180, 0.04) 100%);
@@ -312,10 +313,16 @@ button:disabled {
   gap: 12px;
   align-content: start;
   padding-bottom: 12px;
+  contain: layout paint;
+}
+
+.virtual-card-grid {
+  display: block;
 }
 
 .email-card {
   position: relative;
+  width: 100%;
   background:
     linear-gradient(145deg, rgba(228, 90, 154, 0.1) 0%, transparent 42%),
     linear-gradient(160deg, #1c161b 0%, #121214 72%);
@@ -323,12 +330,11 @@ button:disabled {
   border-radius: 16px;
   padding: 14px 14px 12px;
   text-align: left;
-  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .email-card:hover {
   border-color: rgba(228, 90, 154, 0.4);
-  transform: translateY(-2px);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
 

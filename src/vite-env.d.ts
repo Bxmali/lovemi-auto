@@ -79,7 +79,7 @@ interface LoginResult {
 
 interface LovemiBridge {
   loadAccounts: () => Promise<string | null>
-  saveAccounts: (plaintext: string) => Promise<{ ok: boolean; encrypted: boolean }>
+  saveAccounts: (plaintext: string) => Promise<{ ok: boolean; encrypted: boolean; error?: string; count?: number }>
   probeAccount: (input: ProbeInput) => Promise<ProbeResult>
   probeBatch: (inputs: ProbeInput[]) => Promise<ProbeResult[]>
   registerLovemi: (input: RegisterInput) => Promise<RegisterResult>
