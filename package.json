@@ -1,7 +1,7 @@
 {
   "name": "lovemi-auto",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "productName": "Lovemi Auto",
   "description": "Lovemi 专属自动化平台",
   "type": "module",

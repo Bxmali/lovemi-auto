@@ -11,6 +11,7 @@ type FeatureTask = {
   progress?: number
   title?: string
   prompt?: string
+  detail?: string
   jobId?: string
   error?: string
   imageUrl?: string
@@ -90,6 +91,7 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
                   typeof progress.progress === 'number' ? progress.progress : task.progress,
                 title: progress.title || task.title,
                 prompt: progress.prompt || task.prompt,
+                detail: progress.detail || task.detail,
                 jobId: progress.jobId || task.jobId,
                 error: progress.error || task.error,
                 imageUrl: progress.cacheUrl || progress.cdnUrl || task.imageUrl,
@@ -145,6 +147,7 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
               queuePosition: 0,
               title: result.title || item.title,
               prompt: result.prompt || item.prompt,
+              detail: result.detail || item.detail,
               jobId: result.jobId || item.jobId,
               error: result.error,
               imageUrl: result.cacheUrl || result.cdnUrl || item.imageUrl,
@@ -266,15 +269,20 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
                       原始：{task.userPrompt}
                     </div>
                     {task.prompt ? (
+                      <div className="settings-hint" style={{ marginTop: 8 }}>
+                        提交接口：{task.prompt}
+                      </div>
+                    ) : null}
+                    {task.detail || task.prompt ? (
                       <details style={{ marginTop: 8 }}>
                         <summary className="settings-hint" style={{ cursor: 'pointer' }}>
-                          查看 GPT 润色后的完整提示词
+                          查看 GPT 完整设计说明
                         </summary>
                         <div
                           className="settings-hint"
                           style={{ marginTop: 8, whiteSpace: 'pre-wrap', lineHeight: 1.55 }}
                         >
-                          {task.prompt}
+                          {task.detail || task.prompt}
                         </div>
                       </details>
                     ) : null}

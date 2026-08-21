@@ -612,6 +612,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       runStartedAt?: number
       title?: string
       prompt?: string
+      detail?: string
       model?: string
       jobId?: string
       assetId?: string
@@ -635,6 +636,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       progress?: number
       title?: string
       prompt?: string
+      detail?: string
       jobId?: string
       error?: string
       cdnUrl?: string

@@ -539,6 +539,7 @@ interface LovemiBridge {
     runStartedAt?: number
     title?: string
     prompt?: string
+    detail?: string
     model?: string
     jobId?: string
     assetId?: string
@@ -561,6 +562,7 @@ interface LovemiBridge {
       progress?: number
       title?: string
       prompt?: string
+      detail?: string
       jobId?: string
       error?: string
       cdnUrl?: string

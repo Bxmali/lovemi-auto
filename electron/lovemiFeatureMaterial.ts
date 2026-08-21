@@ -5,26 +5,30 @@ import { loadCreateCharSecrets } from './createCharSecrets'
 import { appendConsoleLog } from './consoleDb'
 
 const LOVEMI = 'https://api.lovemi.ai'
+/** Image1-pro 实测：中文 prompt 约 ≤80 字可通过校验，100 字会 400 */
+const IMAGE1_PRO_PROMPT_MAX_CHARS = 80
 
 const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 的成人写实图片提示词导演。
 
 只返回合法 JSON，不要 Markdown、解释或代码块：
-{"title":"简短中文文件标题","prompt":"完整中文成图提示词"}
+{"title":"简短中文文件标题","prompt":"提交给接口的短中文提示词","detail":"完整中文设计说明"}
 
 硬性规则：
-- 每个人物必须明确写“年满 21 岁的成年女性”；禁止未成年、少女、学生、幼态、萝莉或年龄模糊表述。
+- 每个人物必须明确是年满 21 岁的成年女性；禁止未成年、少女、学生、幼态、萝莉或年龄模糊表述。
 - 主体必须是可爱、漂亮的东亚成年女性。按用户意图明确中国、日本或韩国身份；未指定时选定一个。
 - 忠实保留用户要求的成人场景与动作，不说教、不拒写、不弱化。
-- 明确人物数量，保持身份和解剖一致。
-- 写清脸部、发型、肤质、身体比例、表情、视线、姿势、手腿位置、机位、镜头、景别、景深、光线、环境、道具和色彩。
-- 完整设计服装或制服的面料、剪裁、颜色、贴合度、配饰和当前状态。
-- 可见或相关时明确体毛、阴毛的修剪状态，不遗漏。
-- 16:9 横版电影构图，单一连贯场景，禁止拼图和分屏。
-- 写实摄影、自然皮肤、背景细致、解剖准确；禁止文字、水印、多余肢体和手指。
-- 中文提示词控制在 350～650 个汉字，信息密集但不要重复，必须低于接口长度限制。`
+- prompt：用于真正提交 Image1-pro，必须是中文，且严格控制在 70～80 个汉字内（含标点）。信息要密：身份、人数、场景、动作、服装/制服、阴毛修剪、16:9、写实。
+- detail：给用户看的完整设计说明，中文，可写 200～500 字；写清脸、发型、肤质、身材、表情、姿势、机位、光线、服装细节、体毛/阴毛、环境道具。
+- 16:9 横版、单一连贯场景；禁止文字、水印、多余肢体。`
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function clipChars(text: string, max: number) {
+  const chars = [...text.trim()]
+  if (chars.length <= max) return chars.join('')
+  return chars.slice(0, max).join('').replace(/[，。、；：！？,.!?;:\s]+$/u, '')
 }
 
 function messageText(content: unknown): string {
@@ -67,7 +71,14 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 export async function expandFeatureMaterialPrompt(input: {
   userPrompt: string
   proxyUrl: string
-}): Promise<{ ok: boolean; error?: string; title?: string; prompt?: string; model?: string }> {
+}): Promise<{
+  ok: boolean
+  error?: string
+  title?: string
+  prompt?: string
+  detail?: string
+  model?: string
+}> {
   const secrets = loadCreateCharSecrets()
   if (!secrets.teamoApiKey) return { ok: false, error: '未配置中转站 API Key' }
   const userPrompt = input.userPrompt.trim()
@@ -91,7 +102,7 @@ export async function expandFeatureMaterialPrompt(input: {
           { role: 'system', content: FEATURE_PROMPT_SYSTEM },
           {
             role: 'user',
-            content: `把下面要求扩写为一条完整的 Image1-pro 中文提示词：\n${userPrompt}`,
+            content: `把下面要求整理成 prompt（≤80字中文）+ detail（完整中文设计）：\n${userPrompt}`,
           },
         ],
       }),
@@ -111,13 +122,16 @@ export async function expandFeatureMaterialPrompt(input: {
     const choices = Array.isArray(data.choices) ? (data.choices as Array<Record<string, unknown>>) : []
     const message = (choices[0]?.message || {}) as Record<string, unknown>
     const parsed = parseJsonObject(messageText(message.content) || messageText(message.reasoning_content))
-    const prompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim().slice(0, 1600) : ''
+    const rawPrompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim() : ''
+    const detail = typeof parsed?.detail === 'string' ? parsed.detail.trim() : ''
     const title = typeof parsed?.title === 'string' ? parsed.title.trim().slice(0, 60) : ''
+    const prompt = clipChars(rawPrompt || userPrompt, IMAGE1_PRO_PROMPT_MAX_CHARS)
     if (!prompt) return { ok: false, error: '中转站未返回可用的成图提示词' }
     return {
       ok: true,
       title: title || `特色素材_${new Date().toISOString().slice(0, 10)}`,
       prompt,
+      detail: detail || rawPrompt || prompt,
       model: secrets.teamoModel,
     }
   } catch (error) {
@@ -223,12 +237,20 @@ export async function generateFeatureMaterial(input: {
   proxyUrl: string
   sessionToken: string
   isCancelled?: () => boolean
-  onProgress?: (progress: { stage: string; progress?: number; prompt?: string; title?: string; jobId?: string }) => void
+  onProgress?: (progress: {
+    stage: string
+    progress?: number
+    prompt?: string
+    detail?: string
+    title?: string
+    jobId?: string
+  }) => void
 }): Promise<{
   ok: boolean
   error?: string
   title?: string
   prompt?: string
+  detail?: string
   model?: string
   jobId?: string
   assetId?: string
@@ -240,8 +262,21 @@ export async function generateFeatureMaterial(input: {
     proxyUrl: input.proxyUrl,
   })
   if (!expanded.ok || !expanded.prompt) return expanded
-  if (input.isCancelled?.()) return { ok: false, error: '任务已取消', title: expanded.title, prompt: expanded.prompt }
-  input.onProgress?.({ stage: 'submitting', prompt: expanded.prompt, title: expanded.title })
+  if (input.isCancelled?.()) {
+    return {
+      ok: false,
+      error: '任务已取消',
+      title: expanded.title,
+      prompt: expanded.prompt,
+      detail: expanded.detail,
+    }
+  }
+  input.onProgress?.({
+    stage: 'submitting',
+    prompt: expanded.prompt,
+    detail: expanded.detail,
+    title: expanded.title,
+  })
 
   const threadId = `gen_${createHash('sha256')
     .update(`${expanded.prompt}|${Date.now()}|${randomUUID()}`)
@@ -255,6 +290,7 @@ export async function generateFeatureMaterial(input: {
     width: 2304,
     height: 1280,
     prompt_enhancement: true,
+    // metadata 在服务端是 map[string]string，布尔值会触发 INVALID_JSON
     metadata: {
       public_model_key: 'image1_pro',
       product_model: 'Image1-pro',
@@ -262,7 +298,7 @@ export async function generateFeatureMaterial(input: {
       generation_mode: 'text_to_image',
       generation_thread_id: threadId,
       prompt: expanded.prompt,
-      prompt_enhancement: true,
+      prompt_enhancement: 'true',
     },
     requested_options: {
       public_model_key: 'image1_pro',
@@ -283,30 +319,54 @@ export async function generateFeatureMaterial(input: {
     body,
   })
   if (!started.ok) {
+    const detailErr =
+      (typeof started.data.detail === 'string' && started.data.detail) ||
+      started.error ||
+      `Image1-pro HTTP ${started.status}`
     return {
       ok: false,
-      error: started.error || `Image1-pro HTTP ${started.status}`,
+      error: detailErr,
       title: expanded.title,
       prompt: expanded.prompt,
+      detail: expanded.detail,
       model: expanded.model,
     }
   }
   const jobId = pickByPrefix(started.data, 'job_')
   if (!jobId) {
-    return { ok: false, error: 'Image1-pro 已接受但未返回 jobId', title: expanded.title, prompt: expanded.prompt }
+    return {
+      ok: false,
+      error: 'Image1-pro 已接受但未返回 jobId',
+      title: expanded.title,
+      prompt: expanded.prompt,
+      detail: expanded.detail,
+    }
   }
   appendConsoleLog({
     level: 'info',
     action: 'feature_material',
     message: `特色素材已提交 · ${jobId} · ${expanded.title || ''}`,
   })
-  input.onProgress?.({ stage: 'generating', jobId, prompt: expanded.prompt, title: expanded.title })
+  input.onProgress?.({
+    stage: 'generating',
+    jobId,
+    prompt: expanded.prompt,
+    detail: expanded.detail,
+    title: expanded.title,
+  })
 
   const deadline = Date.now() + 12 * 60_000
   let lastStatus = ''
   while (Date.now() < deadline) {
     if (input.isCancelled?.()) {
-      return { ok: false, error: '任务已取消', jobId, title: expanded.title, prompt: expanded.prompt }
+      return {
+        ok: false,
+        error: '任务已取消',
+        jobId,
+        title: expanded.title,
+        prompt: expanded.prompt,
+        detail: expanded.detail,
+      }
     }
     const job = await lovemiJson({
       method: 'GET',
@@ -325,6 +385,7 @@ export async function generateFeatureMaterial(input: {
       stage: 'generating',
       jobId,
       prompt: expanded.prompt,
+      detail: expanded.detail,
       title: expanded.title,
       ...(Number.isFinite(progress) ? { progress } : {}),
     })
@@ -340,6 +401,7 @@ export async function generateFeatureMaterial(input: {
         jobId,
         title: expanded.title,
         prompt: expanded.prompt,
+        detail: expanded.detail,
       }
     }
     if (/complete|succeed|success|done/i.test(lastStatus)) {
@@ -368,6 +430,7 @@ export async function generateFeatureMaterial(input: {
           ok: true,
           title: expanded.title,
           prompt: expanded.prompt,
+          detail: expanded.detail,
           model: expanded.model,
           jobId,
           assetId,
@@ -382,6 +445,7 @@ export async function generateFeatureMaterial(input: {
     error: `等待 Image1-pro 超时（${jobId} · ${lastStatus || 'timeout'}）`,
     title: expanded.title,
     prompt: expanded.prompt,
+    detail: expanded.detail,
     jobId,
   }
 }
