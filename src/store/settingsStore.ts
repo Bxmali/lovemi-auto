@@ -30,10 +30,14 @@ function load(): SystemSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return { ...DEFAULTS }
-    const parsed = { ...DEFAULTS, ...JSON.parse(raw) } as SystemSettings & { mailProxyRoute?: string }
+    const saved = JSON.parse(raw) as Omit<Partial<SystemSettings>, 'mailProxyRoute'> & {
+      mailProxyRoute?: string
+    }
+    const parsed = { ...DEFAULTS, ...saved }
     // 兼容旧值 url → vless
-    if (parsed.mailProxyRoute === 'url') parsed.mailProxyRoute = 'vless'
-    return parsed as SystemSettings
+    const mailProxyRoute: MailProxyRoute =
+      saved.mailProxyRoute === 'url' || saved.mailProxyRoute === 'vless' ? 'vless' : 'local'
+    return { ...parsed, mailProxyRoute }
   } catch {
     return { ...DEFAULTS }
   }

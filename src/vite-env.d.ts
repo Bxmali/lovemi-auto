@@ -411,6 +411,48 @@ interface LovemiBridge {
     labProjectId?: string
     publishOk?: boolean
   }>
+  createCharEnqueueJob: (input: {
+    jobKind: 'create' | 'motion' | 'autoPublish' | 'pullPublish' | 'fullAuto'
+    clientRunId: string
+    clientSlot: 1 | 2 | 3 | 4 | 5
+    clientRunEpoch: number
+    proxyUrl?: string
+    sessionToken?: string
+    imageBase64?: string
+    mimeType?: string
+    userHint?: string
+    body?: Record<string, unknown>
+    waitPortrait?: boolean
+    characterId?: string
+    portraitCdnUrl?: string
+    coverAssetId?: string
+    characterHint?: string
+    appearanceHint?: string
+    payload?: Record<string, unknown>
+    motionPromptOverride?: string
+    title?: string
+    description?: string
+  }) => Promise<{
+    ok: boolean
+    error?: string
+    cancelled?: boolean
+    runId?: string
+    runStartedAt?: number
+    status?: number
+    data?: Record<string, unknown>
+    portrait?: { cdnUrl?: string; jobId?: string; imageDataUrl?: string; assetId?: string }
+    characterId?: string
+    payload?: Record<string, unknown>
+    portraitPrompt?: string
+    motionPrompt?: string
+    coverAssetId?: string
+    videoAssetId?: string
+    cdnUrl?: string
+    videoCdnUrl?: string
+    listingId?: string
+    portraitCdnUrl?: string
+    portraitJobId?: string
+  }>
   createCharFullAutoPublish: (input: {
     imageBase64: string
     mimeType?: string
@@ -441,9 +483,14 @@ interface LovemiBridge {
     ok: boolean
     error?: string
   }>
+  createCharCancelJob: (input: { runId: string }) => Promise<{
+    ok: boolean
+    error?: string
+  }>
   onCreateCharProgress: (
     cb: (p: {
       stage: string
+      jobKind?: 'create' | 'motion' | 'autoPublish' | 'pullPublish' | 'fullAuto'
       clientSlot?: 1 | 2 | 3 | 4 | 5
       clientRunEpoch?: number
       runId?: string
@@ -479,6 +526,48 @@ interface LovemiBridge {
     bytes?: number
     twitterPath?: string
   }>
+  featureMaterialEnqueue: (input: {
+    runId: string
+    userPrompt: string
+    proxyUrl?: string
+    sessionToken?: string
+  }) => Promise<{
+    ok: boolean
+    error?: string
+    cancelled?: boolean
+    runId: string
+    runStartedAt?: number
+    title?: string
+    prompt?: string
+    model?: string
+    jobId?: string
+    assetId?: string
+    cdnUrl?: string
+    cacheUrl?: string
+    localPath?: string
+    twitterPath?: string
+  }>
+  featureMaterialCancel: (input: { runId: string }) => Promise<{
+    ok: boolean
+    error?: string
+    running?: boolean
+  }>
+  onFeatureMaterialProgress: (
+    cb: (progress: {
+      runId: string
+      stage: string
+      queuePosition?: number
+      runStartedAt?: number
+      progress?: number
+      title?: string
+      prompt?: string
+      jobId?: string
+      error?: string
+      cdnUrl?: string
+      cacheUrl?: string
+      twitterPath?: string
+    }) => void,
+  ) => () => void
   captionGenerate: (input: {
     proxyUrl?: string
     images: Array<{ base64: string; mimeType?: string }>

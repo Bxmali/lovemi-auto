@@ -7,6 +7,7 @@ import { ConsolePage } from './pages/ConsolePage'
 import { CopyLibraryPage } from './pages/CopyLibraryPage'
 import { CreateCharacterPage } from './pages/CreateCharacterPage'
 import { CaptionGenPage } from './pages/CaptionGenPage'
+import { FeatureMaterialPage } from './pages/FeatureMaterialPage'
 import { useEmailStore } from './store/emailStore'
 import type { EmailAccount } from './types/email'
 import { runEnterShell } from './motion/timelines'
@@ -17,13 +18,24 @@ import { hydrateSettings } from './store/settingsStore'
 import { useSecurityLogStore } from './store/securityLogStore'
 import './styles/theme.css'
 
-type NavId = 'email' | 'lovemi' | 'console' | 'createChar' | 'captionGen' | 'copy' | 'security' | 'tasks' | 'settings'
+type NavId =
+  | 'email'
+  | 'lovemi'
+  | 'console'
+  | 'createChar'
+  | 'featureMaterial'
+  | 'captionGen'
+  | 'copy'
+  | 'security'
+  | 'tasks'
+  | 'settings'
 
 const NAV: { id: NavId; label: string; ready: boolean }[] = [
   { id: 'email', label: '邮箱管理', ready: true },
   { id: 'lovemi', label: 'Lovemi账号管理', ready: true },
   { id: 'console', label: '控制台', ready: true },
   { id: 'createChar', label: '创建角色', ready: true },
+  { id: 'featureMaterial', label: '创建特色素材', ready: true },
   { id: 'captionGen', label: '文案生成', ready: true },
   { id: 'copy', label: '文案库', ready: true },
   { id: 'security', label: '安全日志', ready: true },
@@ -241,6 +253,18 @@ export default function App() {
           }}
         >
           <CreateCharacterPage active={nav === 'createChar'} />
+        </div>
+        <div
+          className="main-panel-keep"
+          style={{
+            display: nav === 'featureMaterial' ? 'flex' : 'none',
+            flex: 1,
+            minHeight: 0,
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          <FeatureMaterialPage active={nav === 'featureMaterial'} />
         </div>
         <div
           className="main-panel-keep"

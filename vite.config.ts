@@ -1,12 +1,12 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-// @ts-expect-error vite-plugin-electron/simple typings
 import electron from 'vite-plugin-electron/simple'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
+const electronPlugin = electron as unknown as (options: Record<string, unknown>) => Plugin | Plugin[]
 
 /** Keep watermark helpers beside compiled main.js */
 function copyWatermarkScript(): Plugin {
@@ -41,7 +41,7 @@ export default defineConfig({
   plugins: [
     react(),
     copyWatermarkScript(),
-    electron({
+    electronPlugin({
       main: {
         entry: 'electron/main.ts',
         vite: {

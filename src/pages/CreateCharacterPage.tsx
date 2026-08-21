@@ -7,6 +7,7 @@ import {
   portraitMatchesSlot,
   hydrateCreateCharStoreFromSqlite,
   CREATE_CHAR_SLOT_IDS,
+  type CreateCharQueueKind,
   type CreateCharSlotId,
   type CreateCharSlotDraft,
 } from '../store/createCharStore'
@@ -14,6 +15,18 @@ import { useEmailStore } from '../store/emailStore'
 import { useSettingsStore } from '../store/settingsStore'
 import { runEmailPageEnter } from '../motion/timelines'
 import { MediaLightbox } from '../components/MediaLightbox'
+
+const QUEUE_KIND_LABELS: Record<CreateCharQueueKind, string> = {
+  create: '创建到 Lovemi',
+  motion: '生成动态视频',
+  autoPublish: '生成视频并发布',
+  pullPublish: '拉回并发布',
+  fullAuto: '全自动到发布',
+}
+
+function isCreateCharQueueKind(value: unknown): value is CreateCharQueueKind {
+  return typeof value === 'string' && value in QUEUE_KIND_LABELS
+}
 
 async function resolveProxyUrl() {
   const settings = useSettingsStore.getState()
@@ -195,6 +208,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const draftEpoch = draft.draftEpoch
   const queueStatus = draft.queueStatus
   const queuePosition = draft.queuePosition
+  const queueKind = draft.queueKind
   const waitStartedAt = draft.waitStartedAt
   const motionPrompt = draft.motionPrompt
   const motionPreviewUrl = draft.motionPreviewUrl
@@ -265,6 +279,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           busy: 'idle',
           queueStatus: 'idle',
           queuePosition: 0,
+          queueKind: null,
           waitStartedAt: null,
           waitKind: null,
           runId: '',
@@ -287,6 +302,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           draftEpoch: Number(run.epoch || cur.draftEpoch),
           queueStatus: run.status === 'queued' ? 'queued' : run.status === 'running' ? 'running' : 'idle',
           queuePosition: run.status === 'queued' ? Math.max(1, Number(run.queuePosition || 1)) : 0,
+          queueKind: isCreateCharQueueKind(run.jobKind) ? run.jobKind : 'fullAuto',
           busy: live ? 'auto' : 'idle',
           waitKind: live ? 'publish' : null,
           runStartedAt: live
@@ -356,7 +372,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     (slotId: CreateCharSlotId, clearCharacter: boolean) => {
       const previous = useCreateCharStore.getState().slots[slotId]
       if (previous.runId && previous.queueStatus !== 'idle') {
-        void window.lovemi?.createCharCancelFullAuto?.({ runId: previous.runId })
+        void window.lovemi?.createCharCancelJob?.({ runId: previous.runId })
       }
       const epoch = bumpSlotEpoch(slotId)
       slotRunEpoch.current[slotId] = epoch
@@ -367,6 +383,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         portraitCharacterId: '',
         queueStatus: 'idle',
         queuePosition: 0,
+        queueKind: null,
         runId: '',
         runStartedAt: null,
         ...(clearCharacter
@@ -955,6 +972,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         patchSlot(slotId, {
           queueStatus: 'queued',
           queuePosition: Math.max(1, Number(p.queuePosition || 1)),
+          queueKind: isCreateCharQueueKind(p.jobKind) ? p.jobKind : cur.queueKind,
           waitStartedAt: null,
           runStartedAt: null,
         })
@@ -965,16 +983,19 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         patchSlot(slotId, {
           queueStatus: 'running',
           queuePosition: 0,
+          queueKind: isCreateCharQueueKind(p.jobKind) ? p.jobKind : cur.queueKind,
           waitStartedAt: startedAt,
           runStartedAt: startedAt,
         })
-        pushStepUnique(slotId, 'run', '已出队 · 开始独占全自动流水线')
+        const label = isCreateCharQueueKind(p.jobKind) ? QUEUE_KIND_LABELS[p.jobKind] : '角色任务'
+        pushStepUnique(slotId, 'run', `已出队 · 开始独占执行「${label}」`)
         return
       }
       if (p.stage === 'cancelled') {
         patchSlot(slotId, {
           queueStatus: 'idle',
           queuePosition: 0,
+          queueKind: null,
           busy: 'idle',
           waitStartedAt: null,
           waitKind: null,
@@ -986,11 +1007,12 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         patchSlot(slotId, {
           queueStatus: 'idle',
           queuePosition: 0,
+          queueKind: null,
           busy: 'idle',
           waitStartedAt: null,
           waitKind: null,
         })
-        if (failMsg) pushStepUnique(slotId, 'err', `全自动失败 · ${failMsg}`)
+        if (failMsg) pushStepUnique(slotId, 'err', `队列任务失败 · ${failMsg}`)
         return
       }
       const charId = p.characterId?.trim()
@@ -1172,6 +1194,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   }
 
   const onCreate = async () => {
+    if (!window.lovemi?.createCharEnqueueJob) {
+      setToast('请在 Electron 桌面窗口操作')
+      return
+    }
     let body: Record<string, unknown>
     try {
       body = JSON.parse(payloadText) as Record<string, unknown>
@@ -1201,21 +1227,32 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(`槽${slot}：准备期间草稿已更换，本次创建已取消`)
       return
     }
-    beginSlotRun(slot, true)
-    const runEpoch = useCreateCharStore.getState().slots[slot].draftEpoch
+    const runEpoch = beginSlotRun(slot, true)
+    const runId = crypto.randomUUID()
     patchSlot(slot, {
       busy: 'create',
-      waitStartedAt: Date.now(),
+      queueStatus: 'queued',
+      queuePosition: 1,
+      queueKind: 'create',
+      runId,
+      runStartedAt: null,
+      waitStartedAt: null,
       waitKind: 'portrait',
     })
+    pushStep(slot, 'run', '「创建到 Lovemi」已加入全局队列')
     try {
-      const res = await window.lovemi!.createCharCreate({
+      const res = await window.lovemi!.createCharEnqueueJob({
+        jobKind: 'create',
+        clientRunId: runId,
+        clientSlot: slot,
+        clientRunEpoch: runEpoch,
         sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
         body,
-        waitPortrait: false,
+        waitPortrait: want,
       })
-      if (useCreateCharStore.getState().slots[slot].draftEpoch !== runEpoch) return
+      const current = useCreateCharStore.getState().slots[slot]
+      if (current.draftEpoch !== runEpoch || current.runId !== runId) return
       if (!res.ok) {
         setToast(`槽${slot}：${res.error || '创建失败'}`)
         patchSlot(slot, { lastResult: res.error || '创建失败' })
@@ -1230,39 +1267,12 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       // 仅当前 epoch 可绑定角色 ID；旧创建结果不得写入新草稿。
       patchSlot(slot, {
         createdCharacterId: id,
-        busy: want ? 'portrait' : 'idle',
-        waitStartedAt: want ? Date.now() : null,
-        waitKind: want ? 'portrait' : null,
         lastResult: formatCompactResult({ characterOk: true, id, waitingPortrait: want }),
       })
       pushStep(slot, 'ok', `角色已创建 · ${id.slice(0, 18)}…`)
-      setToast(`槽${slot}：角色已创建 · 等待立绘…`)
+      setToast(`槽${slot}：角色已创建${want ? ' · 立绘流程已完成' : ''}`)
 
-      let portrait = res.portrait
-      if (want && window.lovemi?.createCharWaitPortrait) {
-        pushStep(slot, 'run', '等待 Lovemi 立绘生成…')
-        const waited = await window.lovemi.createCharWaitPortrait({
-          characterId: id,
-          sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
-          proxyUrl: outbound.proxyUrl,
-          forceRestart: false,
-        })
-        if (useCreateCharStore.getState().slots[slot].draftEpoch !== runEpoch) return
-        if (waited.ok) {
-          portrait = {
-            cdnUrl: waited.cdnUrl,
-            jobId: waited.jobId,
-            imageDataUrl: waited.imageDataUrl,
-            assetId: waited.assetId,
-          }
-        } else {
-          patchSlot(slot, {
-            lastResult: formatCompactResult({ characterOk: true, id, portraitError: waited.error }),
-          })
-          pushStep(slot, 'err', `立绘未出 · ${waited.error || '超时'}`)
-          setToast(`槽${slot}：角色在，立绘未出 · ${waited.error || ''}`)
-        }
-      }
+      const portrait = res.portrait
 
       const next: {
         lastResult: string
@@ -1305,8 +1315,18 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         )
       }
     } finally {
-      if (useCreateCharStore.getState().slots[slot].draftEpoch === runEpoch) {
-        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      const current = useCreateCharStore.getState().slots[slot]
+      if (current.draftEpoch === runEpoch && current.runId === runId) {
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          queueKind: null,
+          runId: '',
+          runStartedAt: null,
+          waitStartedAt: null,
+          waitKind: null,
+        })
       }
     }
   }
@@ -1381,7 +1401,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast('先创建角色（需要 chr_）')
       return
     }
-    if (!window.lovemi?.createCharGenerateMotionOnly) {
+    if (!window.lovemi?.createCharEnqueueJob) {
       setToast('请在 Electron 桌面窗口操作')
       return
     }
@@ -1415,15 +1435,25 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     } catch {
       payload = undefined
     }
+    const runId = crypto.randomUUID()
     patchSlot(slot, {
       busy: 'motion',
-      waitStartedAt: Date.now(),
+      queueStatus: 'queued',
+      queuePosition: 1,
+      queueKind: 'motion',
+      runId,
+      runStartedAt: null,
+      waitStartedAt: null,
       waitKind: 'motion',
       motionPreviewUrl: null,
     })
-    pushStep(slot, 'run', '开始生成动态视频…')
+    pushStep(slot, 'run', '「生成动态视频」已加入全局队列')
     try {
-      const res = await window.lovemi.createCharGenerateMotionOnly({
+      const res = await window.lovemi.createCharEnqueueJob({
+        jobKind: 'motion',
+        clientRunId: runId,
+        clientSlot: slot,
+        clientRunEpoch: snap.draftEpoch,
         characterId: snap.createdCharacterId,
         sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
@@ -1436,7 +1466,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           ? payload!.appearance_tags.map(String).slice(0, 12).join('；')
           : '',
       })
-      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
+      const current = useCreateCharStore.getState().slots[slot]
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) || current.runId !== runId) return
       const upd: Parameters<typeof patchSlot>[1] = {
         lastResult: formatCompactResult(res),
       }
@@ -1453,8 +1484,18 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       pushStep(slot, 'ok', `动态视频已完成${res.videoAssetId ? ` · ${res.videoAssetId}` : ''}`)
       setToast(`槽${slot}：视频已生成 · 预览后点「确认该视频发布」`)
     } finally {
-      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
-        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      const current = useCreateCharStore.getState().slots[slot]
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) && current.runId === runId) {
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          queueKind: null,
+          runId: '',
+          runStartedAt: null,
+          waitStartedAt: null,
+          waitKind: null,
+        })
       }
     }
   }
@@ -1566,7 +1607,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast('先创建角色')
       return
     }
-    if (!window.lovemi?.createCharAutoVideoPublish) {
+    if (!window.lovemi?.createCharEnqueueJob) {
       setToast('请在 Electron 桌面窗口操作')
       return
     }
@@ -1588,8 +1629,18 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     } catch {
       payload = undefined
     }
-    patchSlot(slot, { busy: 'auto', waitStartedAt: Date.now(), waitKind: 'publish' })
-    pushStep(slot, 'run', '开始自动生成视频并发布…')
+    const runId = crypto.randomUUID()
+    patchSlot(slot, {
+      busy: 'auto',
+      queueStatus: 'queued',
+      queuePosition: 1,
+      queueKind: 'autoPublish',
+      runId,
+      runStartedAt: null,
+      waitStartedAt: null,
+      waitKind: 'publish',
+    })
+    pushStep(slot, 'run', '「生成视频并发布」已加入全局队列')
     try {
       const portraitCdn =
         (snap.portraitCdnUrl?.startsWith('http') && snap.portraitCdnUrl) ||
@@ -1600,7 +1651,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         rawOverride && !/不能帮你|无法协助|我不能|拒[绝写]|未成年|近未成年|underage|as an ai|i can'?t|i cannot/i.test(rawOverride)
           ? rawOverride
           : undefined
-      const res = await window.lovemi.createCharAutoVideoPublish({
+      const res = await window.lovemi.createCharEnqueueJob({
+        jobKind: 'autoPublish',
+        clientRunId: runId,
+        clientSlot: slot,
+        clientRunEpoch: snap.draftEpoch,
         characterId: snap.createdCharacterId,
         sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
@@ -1614,7 +1669,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         payload,
         motionPromptOverride,
       })
-      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
+      const current = useCreateCharStore.getState().slots[slot]
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) || current.runId !== runId) return
       const upd: Parameters<typeof patchSlot>[1] = {
         lastResult: formatCompactResult(res),
         publishResult: formatCompactResult(res),
@@ -1648,8 +1704,18 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         16000,
       )
     } finally {
-      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
-        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      const current = useCreateCharStore.getState().slots[slot]
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) && current.runId === runId) {
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          queueKind: null,
+          runId: '',
+          runStartedAt: null,
+          waitStartedAt: null,
+          waitKind: null,
+        })
       }
     }
   }
@@ -1658,19 +1724,20 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     const slot = activeSlot
     const cur = useCreateCharStore.getState().slots[slot]
     if (cur.runId) {
-      await window.lovemi?.createCharCancelFullAuto?.({ runId: cur.runId })
+      await window.lovemi?.createCharCancelJob?.({ runId: cur.runId })
     }
     patchSlot(slot, {
       busy: 'idle',
       queueStatus: 'idle',
       queuePosition: 0,
+      queueKind: null,
       waitStartedAt: null,
       waitKind: null,
       runId: '',
       runStartedAt: null,
     })
-    pushStepUnique(slot, 'err', '已停止/解锁本槽 · 可重新全自动（不会自动重跑）')
-    setToast(`槽${slot}：已解锁，可重新点全自动`)
+    pushStepUnique(slot, 'err', '已停止/解锁本槽 · 可重新加入全局队列（不会自动重跑）')
+    setToast(`槽${slot}：已解锁，可重新加入队列`)
   }
 
   const onFullAutoPublish = async () => {
@@ -1678,7 +1745,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast('先 Ctrl+V 粘贴参考图（闪退后若本槽无图，请重新粘贴一次）')
       return
     }
-    if (!window.lovemi?.createCharFullAutoPublish) {
+    if (!window.lovemi?.createCharEnqueueJob) {
       setToast('请在 Electron 桌面窗口操作')
       return
     }
@@ -1701,6 +1768,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       busy: 'auto',
       queueStatus: 'queued',
       queuePosition: 1,
+      queueKind: 'fullAuto',
       runId,
       runStartedAt: null,
       waitStartedAt: null,
@@ -1711,7 +1779,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     pushStep(slot, 'run', '已加入全自动队列 · 等待前序角色完成')
     const epochAtStart = runEpoch
     try {
-      const res = await window.lovemi.createCharFullAutoPublish({
+      const res = await window.lovemi.createCharEnqueueJob({
+        jobKind: 'fullAuto',
         imageBase64: snap.imageBase64!,
         mimeType: snap.mimeType,
         proxyUrl: outbound.proxyUrl,
@@ -1797,6 +1866,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           busy: 'idle',
           queueStatus: 'idle',
           queuePosition: 0,
+          queueKind: null,
+          runId: '',
+          runStartedAt: null,
           waitStartedAt: null,
           waitKind: null,
         })
@@ -1811,7 +1883,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(`槽${slot}：先有角色 ID`, 5000)
       return
     }
-    if (!window.lovemi?.createCharRefreshVideo || !window.lovemi?.createCharSetPreviewPublish) {
+    if (!window.lovemi?.createCharEnqueueJob) {
       setToast('请在 Electron 桌面窗口操作', 5000)
       return
     }
@@ -1824,83 +1896,70 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       setToast(`槽${slot}：准备期间角色已变更，本次拉回已取消`)
       return
     }
-    pushStep(slot, 'run', '拉回站内视频并提交发布…')
-    patchSlot(slot, { busy: 'publish', waitStartedAt: Date.now(), waitKind: 'publish' })
+    const { title, description } = buildPublishMeta()
+    const runId = crypto.randomUUID()
+    pushStep(slot, 'run', '「拉回并发布」已加入全局队列')
+    patchSlot(slot, {
+      busy: 'publish',
+      queueStatus: 'queued',
+      queuePosition: 1,
+      queueKind: 'pullPublish',
+      runId,
+      runStartedAt: null,
+      waitStartedAt: null,
+      waitKind: 'publish',
+    })
     try {
-      setToast(`槽${slot}：正在拉回站内视频…`, 4000)
-      const pulled = await window.lovemi.createCharRefreshVideo({
+      const result = await window.lovemi.createCharEnqueueJob({
+        jobKind: 'pullPublish',
+        clientRunId: runId,
+        clientSlot: slot,
+        clientRunEpoch: snap.draftEpoch,
         characterId: snap.createdCharacterId,
         sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
         proxyUrl: outbound.proxyUrl,
-      })
-      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
-      if (!pulled.ok || !pulled.videoAssetId) {
-        pushStep(slot, 'err', `拉回失败 · ${pulled.error || '站内暂无视频'}`)
-        setToast(`【槽${slot}】站内还没有视频可拉 · ${pulled.error || ''}`, 12000)
-        return
-      }
-      pushStep(slot, 'ok', `已拉回站内视频 · ${pulled.videoAssetId}`)
-      const cover =
-        snap.motionInputAssetId ||
-        (await (async () => {
-          // 没有封面 asset 时，尽量用 refresh portrait
-          if (!window.lovemi?.createCharRefreshPortrait) return ''
-          const por = await window.lovemi.createCharRefreshPortrait({
-            characterId: snap.createdCharacterId,
-            sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
-            proxyUrl: outbound.proxyUrl!,
-          })
-          return por.assetId || ''
-        })())
-      if (!cover) {
-        pushStep(slot, 'err', '有视频但缺少立绘 asset，无法绑封面发布')
-        setToast(`【槽${slot}】缺立绘 asset，先点创建/刷新立绘`, 12000)
-        patchSlot(slot, {
-          motionOutputAssetId: pulled.videoAssetId,
-          motionPreviewUrl: pulled.cdnUrl || snap.motionPreviewUrl,
-        })
-        if (pulled.cdnUrl) void ensurePlayableVideoUrl(pulled.cdnUrl, slot)
-        return
-      }
-      const { title, description } = buildPublishMeta()
-      // 故意不传旧 listingId，避免三槽串台提交错 listing
-      const pub = await window.lovemi.createCharSetPreviewPublish({
-        characterId: snap.createdCharacterId,
-        sessionToken: undefined, // 主进程用本机加密保存的管理员 Bearer
-        proxyUrl: outbound.proxyUrl,
-        coverAssetId: cover,
-        videoAssetId: pulled.videoAssetId,
+        coverAssetId: snap.motionInputAssetId || undefined,
         title,
         description,
-        publish: true,
       })
-      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) return
+      const current = useCreateCharStore.getState().slots[slot]
+      if (!slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) || current.runId !== runId) return
       patchSlot(slot, {
-        motionInputAssetId: cover,
-        motionOutputAssetId: pulled.videoAssetId,
-        motionPreviewUrl: pulled.cdnUrl || snap.motionPreviewUrl,
-        listingId: pub.listingId || '',
-        lastResult: formatCompactResult({ pulled, pub }),
-        publishResult: formatCompactResult(pub),
+        motionInputAssetId: result.coverAssetId || snap.motionInputAssetId,
+        motionOutputAssetId: result.videoAssetId || snap.motionOutputAssetId,
+        motionPreviewUrl: result.cdnUrl || snap.motionPreviewUrl,
+        listingId: result.listingId || '',
+        lastResult: formatCompactResult(result),
+        publishResult: formatCompactResult(result),
       })
-      if (pulled.cdnUrl) void ensurePlayableVideoUrl(pulled.cdnUrl, slot)
-      if (!pub.ok) {
-        pushStep(slot, 'err', `绑视频/发布失败 · ${pub.error || ''}`)
-        setToast(`【槽${slot} 发布失败】${pub.error || '请看步骤清单'}`, 14000)
+      if (result.cdnUrl) void ensurePlayableVideoUrl(result.cdnUrl, slot)
+      if (!result.ok) {
+        pushStep(slot, 'err', `拉回/发布失败 · ${result.error || ''}`)
+        setToast(`【槽${slot} 发布失败】${result.error || '请看步骤清单'}`, 14000)
         return
       }
       pushStep(
         slot,
         'ok',
-        `拉回并发布已完成${pub.listingId ? ` · ${pub.listingId}` : ''}`,
+        `拉回并发布已完成${result.listingId ? ` · ${result.listingId}` : ''}`,
       )
       setToast(
-        `【槽${slot} 成功】已拉回站内视频并提交发布${pub.listingId ? ` · ${pub.listingId}` : ''}。请到站内刷新看是否已离开草稿。`,
+        `【槽${slot} 成功】已拉回站内视频并提交发布${result.listingId ? ` · ${result.listingId}` : ''}。请到站内刷新看是否已离开草稿。`,
         18000,
       )
     } finally {
-      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId)) {
-        patchSlot(slot, { busy: 'idle', waitStartedAt: null, waitKind: null })
+      const current = useCreateCharStore.getState().slots[slot]
+      if (slotStillMatches(slot, snap.draftEpoch, snap.createdCharacterId) && current.runId === runId) {
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          queueKind: null,
+          runId: '',
+          runStartedAt: null,
+          waitStartedAt: null,
+          waitKind: null,
+        })
       }
     }
   }
@@ -1978,7 +2037,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                 >
                   槽{id}{' '}
                   {s.queueStatus === 'queued'
-                    ? `排队第 ${s.queuePosition || 1} 位`
+                    ? `${s.queueKind ? QUEUE_KIND_LABELS[s.queueKind] : '任务'} · 排队第 ${s.queuePosition || 1} 位`
+                    : s.queueKind
+                      ? QUEUE_KIND_LABELS[s.queueKind]
                     : s.waitKind === 'publish' || s.busy === 'auto'
                     ? '到发布'
                     : s.waitKind === 'motion' || s.busy === 'motion'
@@ -2286,15 +2347,19 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || fullAutoQueueBusy || !payloadText}
+              disabled={busy !== 'idle' || queueStatus !== 'idle' || !payloadText}
               onClick={() => void onCreate()}
             >
-              {busy === 'create' ? (wantPortrait ? '创建并等待立绘…' : '创建中…') : '创建到 Lovemi'}
+              {queueKind === 'create' && queueStatus === 'queued'
+                ? `创建排队中（第 ${queuePosition || 1} 位）`
+                : queueKind === 'create' && queueStatus === 'running'
+                  ? '创建到 Lovemi 中…'
+                  : '创建到 Lovemi'}
             </button>
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
+              disabled={busy !== 'idle' || queueStatus !== 'idle' || !createdCharacterId}
               onClick={() => void onRestartPortrait()}
               title="Lovemi 生图 job 失败或超时时，强制重新触发生图"
             >
@@ -2307,7 +2372,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               onClick={() => void onGenerateMotionOnly()}
               title="Teamo 诱惑向提示词 → companion 生 5s 视频（需再点确认发布）"
             >
-              {busy === 'motion' ? '生成动态视频中…' : '生成动态视频'}
+              {queueKind === 'motion' && queueStatus === 'queued'
+                ? `视频排队中（第 ${queuePosition || 1} 位）`
+                : queueKind === 'motion' && queueStatus === 'running'
+                  ? '生成动态视频中…'
+                  : '生成动态视频'}
             </button>
             <button
               type="button"
@@ -2327,20 +2396,28 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             <button
               type="button"
               className="btn"
-              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
+              disabled={busy !== 'idle' || queueStatus !== 'idle' || !createdCharacterId}
               onClick={() => void onAutoVideoPublish()}
               title="Teamo → 视频 → 绑动态图 → 发布（一条龙）"
             >
-              {busy === 'auto' ? '自动视频发布中…' : '自动生成视频并发布'}
+              {queueKind === 'autoPublish' && queueStatus === 'queued'
+                ? `视频发布排队中（第 ${queuePosition || 1} 位）`
+                : queueKind === 'autoPublish' && queueStatus === 'running'
+                  ? '自动视频发布中…'
+                  : '自动生成视频并发布'}
             </button>
             <button
               type="button"
               className="btn ghost"
-              disabled={busy !== 'idle' || fullAutoQueueBusy || !createdCharacterId}
+              disabled={busy !== 'idle' || queueStatus !== 'idle' || !createdCharacterId}
               onClick={() => void onPullSiteVideoAndPublish()}
               title="站内已有视频但还是草稿时：拉回视频 → 绑动态图 → 提交发布"
             >
-              拉回并发布
+              {queueKind === 'pullPublish' && queueStatus === 'queued'
+                ? `拉回排队中（第 ${queuePosition || 1} 位）`
+                : queueKind === 'pullPublish' && queueStatus === 'running'
+                  ? '拉回并发布中…'
+                  : '拉回并发布'}
             </button>
             <button
               type="button"
@@ -2350,9 +2427,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               onClick={() => void onFullAutoPublish()}
               title="参考图+提示词 → JSON → 立绘 → 视频 → 绑定 → 发布；其他槽运行时可继续加入串行队列"
             >
-              {queueStatus === 'queued'
+              {queueKind === 'fullAuto' && queueStatus === 'queued'
                 ? `排队中（第 ${queuePosition || 1} 位）`
-                : queueStatus === 'running'
+                : queueKind === 'fullAuto' && queueStatus === 'running'
                   ? '全自动进行中…'
                   : '全自动到发布'}
             </button>

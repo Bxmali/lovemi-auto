@@ -166,6 +166,10 @@ button:disabled {
   overflow: auto;
 }
 
+.email-page.feature-material-page {
+  overflow: auto;
+}
+
 .email-page.create-char-page .card-grid {
   flex: none;
   min-height: auto;

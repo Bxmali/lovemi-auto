@@ -11,6 +11,7 @@ export type CreateCharBusy =
 
 export type CreateCharSlotId = 1 | 2 | 3 | 4 | 5
 export const CREATE_CHAR_SLOT_IDS: CreateCharSlotId[] = [1, 2, 3, 4, 5]
+export type CreateCharQueueKind = 'create' | 'motion' | 'autoPublish' | 'pullPublish' | 'fullAuto'
 
 export type CreateCharStepKind = 'ok' | 'err' | 'run'
 
@@ -50,10 +51,11 @@ export type CreateCharSlotDraft = {
   draftEpoch: number
   /** 当前立绘属于哪个 chr_；与 createdCharacterId 不一致则不展示 */
   portraitCharacterId: string
-  /** 全自动严格串行队列状态（不持久化） */
+  /** 五类角色操作共享的严格串行队列状态 */
   queueStatus: 'idle' | 'queued' | 'running'
   queuePosition: number
-  /** 每次全自动唯一运行 ID；进度、素材、下载都必须匹配 */
+  queueKind: CreateCharQueueKind | null
+  /** 每次队列任务唯一运行 ID；进度、素材、下载都必须匹配 */
   runId: string
   runStartedAt: number | null
   /** 步骤完成清单（绿色长显，切槽不丢） */
@@ -121,6 +123,7 @@ const SLOT_DEFAULTS: CreateCharSlotDraft = {
   portraitCharacterId: '',
   queueStatus: 'idle',
   queuePosition: 0,
+  queueKind: null,
   runId: '',
   runStartedAt: null,
   stepLog: [],
@@ -181,6 +184,7 @@ function normalizeSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCha
   base.waitKind = null
   base.queueStatus = 'idle'
   base.queuePosition = 0
+  base.queueKind = null
   base.runId = ''
   base.runStartedAt = null
   // 旧版可能把多槽 base64 写进 Local Storage（可达几十 MB）；启动时一律丢掉，避免 OOM。
@@ -234,6 +238,7 @@ function normalizeSqlSlot(raw: Partial<CreateCharSlotDraft> | undefined): Create
   base.waitKind = null
   base.queueStatus = 'idle'
   base.queuePosition = 0
+  base.queueKind = null
   base.runId = ''
   base.runStartedAt = null
   base.lastResult = scrubHugeText(base.lastResult)
@@ -388,6 +393,7 @@ function persistSqlSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
     draftEpoch: s.draftEpoch,
     queueStatus: s.queueStatus,
     queuePosition: s.queuePosition,
+    queueKind: s.queueKind,
     runId: s.runId,
     runStartedAt: s.runStartedAt,
   }

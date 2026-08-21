@@ -45,6 +45,7 @@ import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemi
 import { autoVideoAndPublish, fullAutoToPublish, generateMotionVideoOnly } from './lovemiAutoPublish'
 import { cacheLovemiCdnMedia, mediaCacheDir } from './lovemiMediaCache'
 import { generateSocialCaption } from './lovemiCaptionGen'
+import { generateFeatureMaterial } from './lovemiFeatureMaterial'
 import {
   loadCreateCharReferenceImage,
   loadCreateCharUiState,
@@ -655,6 +656,158 @@ ipcMain.handle(
   },
 )
 
+type FeatureMaterialQueueInput = {
+  runId: string
+  userPrompt: string
+  proxyUrl?: string
+  sessionToken?: string
+}
+
+type FeatureMaterialQueueItem = {
+  input: FeatureMaterialQueueInput
+  resolve: (value: Record<string, unknown>) => void
+}
+
+const featureMaterialQueue: FeatureMaterialQueueItem[] = []
+const cancelledFeatureMaterialRuns = new Set<string>()
+let featureMaterialQueueRunning = false
+let activeFeatureMaterialRunId = ''
+
+function broadcastFeatureMaterialProgress(progress: Record<string, unknown>) {
+  const target = mainWindow
+  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return
+  target.webContents.send('featureMaterial:progress', progress)
+}
+
+function refreshFeatureMaterialQueuePositions() {
+  featureMaterialQueue.forEach((item, index) => {
+    broadcastFeatureMaterialProgress({
+      runId: item.input.runId,
+      stage: 'queued',
+      queuePosition: index + 1,
+    })
+  })
+}
+
+async function drainFeatureMaterialQueue() {
+  if (featureMaterialQueueRunning) return
+  featureMaterialQueueRunning = true
+  try {
+    while (featureMaterialQueue.length) {
+      const item = featureMaterialQueue.shift()!
+      refreshFeatureMaterialQueuePositions()
+      const { input } = item
+      if (cancelledFeatureMaterialRuns.delete(input.runId)) {
+        broadcastFeatureMaterialProgress({ runId: input.runId, stage: 'cancelled' })
+        item.resolve({ ok: false, cancelled: true, runId: input.runId, error: '排队任务已取消' })
+        continue
+      }
+      if (!input.proxyUrl) {
+        item.resolve({ ok: false, runId: input.runId, error: '未配置出站代理（禁止直连）' })
+        continue
+      }
+      const secrets = loadCreateCharSecrets()
+      const token = secrets.adminSessionToken || input.sessionToken || ''
+      if (!token) {
+        item.resolve({ ok: false, runId: input.runId, error: '请配置管理员 Bearer' })
+        continue
+      }
+      activeFeatureMaterialRunId = input.runId
+      const runStartedAt = Date.now()
+      broadcastFeatureMaterialProgress({
+        runId: input.runId,
+        stage: 'running',
+        queuePosition: 0,
+        runStartedAt,
+      })
+      try {
+        const result = await generateFeatureMaterial({
+          userPrompt: input.userPrompt,
+          proxyUrl: input.proxyUrl,
+          sessionToken: token,
+          isCancelled: () => cancelledFeatureMaterialRuns.has(input.runId),
+          onProgress: (progress) =>
+            broadcastFeatureMaterialProgress({
+              ...progress,
+              runId: input.runId,
+              runStartedAt,
+            }),
+        })
+        let cached: Record<string, unknown> = {}
+        if (result.ok && result.cdnUrl) {
+          const exportWatermark = secrets.autoDownloadWatermark !== false
+          cached = await cacheLovemiCdnMedia({
+            cdnUrl: result.cdnUrl,
+            proxyUrl: input.proxyUrl,
+            appData: APP_DATA,
+            saveDisplayName: exportWatermark ? result.title || '特色素材' : undefined,
+            downloadsPath: exportWatermark ? resolveTwitterDownloadsParent() : undefined,
+            kind: 'media',
+            assetId: result.assetId,
+            runId: input.runId,
+          })
+        }
+        const response = {
+          ...result,
+          ...cached,
+          runId: input.runId,
+          runStartedAt,
+          cancelled: cancelledFeatureMaterialRuns.has(input.runId),
+        }
+        broadcastFeatureMaterialProgress({
+          ...response,
+          stage: result.ok ? 'completed' : response.cancelled ? 'cancelled' : 'failed',
+        })
+        item.resolve(response)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        broadcastFeatureMaterialProgress({ runId: input.runId, stage: 'failed', error: message })
+        item.resolve({ ok: false, runId: input.runId, error: message })
+      } finally {
+        cancelledFeatureMaterialRuns.delete(input.runId)
+        if (activeFeatureMaterialRunId === input.runId) activeFeatureMaterialRunId = ''
+      }
+    }
+  } finally {
+    featureMaterialQueueRunning = false
+  }
+}
+
+ipcMain.handle('featureMaterial:enqueue', async (_event, input: FeatureMaterialQueueInput) => {
+  if (!input.runId) return { ok: false, error: '缺少 runId' }
+  if (!input.userPrompt?.trim()) return { ok: false, error: '请输入自定义提示词' }
+  return new Promise<Record<string, unknown>>((resolve) => {
+    const item: FeatureMaterialQueueItem = {
+      input: { ...input, userPrompt: input.userPrompt.trim() },
+      resolve,
+    }
+    featureMaterialQueue.push(item)
+    broadcastFeatureMaterialProgress({
+      runId: input.runId,
+      stage: 'queued',
+      queuePosition: featureMaterialQueue.length,
+    })
+    refreshFeatureMaterialQueuePositions()
+    void drainFeatureMaterialQueue()
+  })
+})
+
+ipcMain.handle('featureMaterial:cancel', async (_event, input: { runId?: string }) => {
+  const runId = input.runId?.trim()
+  if (!runId) return { ok: false, error: '缺少 runId' }
+  cancelledFeatureMaterialRuns.add(runId)
+  for (let index = featureMaterialQueue.length - 1; index >= 0; index--) {
+    const item = featureMaterialQueue[index]
+    if (item.input.runId !== runId) continue
+    featureMaterialQueue.splice(index, 1)
+    broadcastFeatureMaterialProgress({ runId, stage: 'cancelled' })
+    item.resolve({ ok: false, cancelled: true, runId, error: '排队任务已取消' })
+    cancelledFeatureMaterialRuns.delete(runId)
+  }
+  refreshFeatureMaterialQueuePositions()
+  return { ok: true, running: activeFeatureMaterialRunId === runId }
+})
+
 ipcMain.handle(
   'createChar:waitPortrait',
   async (
@@ -902,25 +1055,39 @@ ipcMain.handle(
   },
 )
 
-type FullAutoQueueInput = {
+type CreateCharJobKind = 'create' | 'motion' | 'autoPublish' | 'pullPublish' | 'fullAuto'
+
+type CreateCharQueueInput = {
+  jobKind: CreateCharJobKind
   imageBase64?: string
   imagePath?: string
   mimeType?: string
   proxyUrl?: string
   sessionToken?: string
   userHint?: string
+  body?: Record<string, unknown>
+  waitPortrait?: boolean
+  characterId?: string
+  portraitCdnUrl?: string
+  coverAssetId?: string
+  characterHint?: string
+  appearanceHint?: string
+  payload?: Record<string, unknown>
+  motionPromptOverride?: string
+  title?: string
+  description?: string
   clientSlot?: 1 | 2 | 3 | 4 | 5
   clientRunEpoch?: number
   clientRunId: string
 }
 
-type FullAutoQueueItem = {
-  input: FullAutoQueueInput
+type CreateCharQueueItem = {
+  input: CreateCharQueueInput
   sender: WebContents
   resolve: (value: Record<string, unknown>) => void
 }
 
-const fullAutoQueue: FullAutoQueueItem[] = []
+const fullAutoQueue: CreateCharQueueItem[] = []
 const cancelledFullAutoRuns = new Set<string>()
 const fullAutoRuntime = new Map<string, CreateCharRunSnapshot>()
 let fullAutoQueueRunning = false
@@ -933,7 +1100,7 @@ function stagedFullAutoImagePath(runId: string) {
   return path.join(dir, `${safeId}.image`)
 }
 
-function cleanupStagedFullAutoImage(input: FullAutoQueueInput) {
+function cleanupStagedFullAutoImage(input: CreateCharQueueInput) {
   if (!input.imagePath) return
   try {
     fs.unlinkSync(input.imagePath)
@@ -949,7 +1116,7 @@ function broadcastCreateCharProgress(progress: Record<string, unknown>) {
 }
 
 function persistFullAutoProgress(
-  item: FullAutoQueueItem,
+  item: CreateCharQueueItem,
   progress: Record<string, unknown>,
   status?: CreateCharRunSnapshot['status'],
 ) {
@@ -977,6 +1144,7 @@ function persistFullAutoProgress(
     stage,
     clientSlot: item.input.clientSlot,
     clientRunEpoch: item.input.clientRunEpoch,
+    jobKind: item.input.jobKind,
   }
   fullAutoRuntime.set(runId, snapshot)
   try {
@@ -995,7 +1163,7 @@ function persistFullAutoProgress(
 }
 
 function sendFullAutoQueueProgress(
-  item: FullAutoQueueItem,
+  item: CreateCharQueueItem,
   stage: 'queued' | 'running' | 'cancelled' | 'failed',
   queuePosition = 0,
   runStartedAt?: number,
@@ -1022,6 +1190,134 @@ function refreshFullAutoQueuePositions() {
   fullAutoQueue.forEach((item, index) => sendFullAutoQueueProgress(item, 'queued', index + 1))
 }
 
+async function executeCreateCharQueueItem(
+  item: CreateCharQueueItem,
+  token: string,
+  runStartedAt: number,
+): Promise<Record<string, unknown>> {
+  const { input } = item
+  const proxyUrl = input.proxyUrl!
+  const imageBase64 =
+    input.imagePath && fs.existsSync(input.imagePath)
+      ? fs.readFileSync(input.imagePath).toString('base64')
+      : undefined
+  const isCancelled = () => cancelledFullAutoRuns.has(input.clientRunId)
+
+  if (input.jobKind === 'create') {
+    const result = await createLovemiCharacter({
+      sessionToken: token,
+      proxyUrl,
+      body: input.body || {},
+      waitPortrait: input.waitPortrait !== false,
+    })
+    if (result.ok) {
+      const secrets = loadCreateCharSecrets()
+      const who = secrets.adminEmailLocal ? ` · 归属 ${secrets.adminEmailLocal}` : ' · 归属本机管理员 Bearer'
+      appendConsoleLog({
+        level: 'info',
+        action: 'create_char',
+        message: `已创建角色「${String(input.body?.display_name || '')}」${who}${result.portrait?.cdnUrl ? ' · Lovemi 立绘已出' : ''}`,
+      })
+      return { ...result, createdAs: secrets.adminEmailLocal || 'admin-bearer' }
+    }
+    return result
+  }
+
+  if (!input.characterId && input.jobKind !== 'fullAuto') {
+    return { ok: false, error: '缺少 characterId' }
+  }
+
+  if (input.jobKind === 'motion') {
+    return generateMotionVideoOnly({
+      characterId: input.characterId!,
+      sessionToken: token,
+      proxyUrl,
+      portraitCdnUrl: input.portraitCdnUrl,
+      imageBase64,
+      mimeType: input.mimeType,
+      coverAssetId: input.coverAssetId,
+      characterHint: input.characterHint,
+      appearanceHint: input.appearanceHint,
+    })
+  }
+
+  if (input.jobKind === 'autoPublish') {
+    return autoVideoAndPublish({
+      characterId: input.characterId!,
+      sessionToken: token,
+      proxyUrl,
+      portraitCdnUrl: input.portraitCdnUrl,
+      imageBase64,
+      mimeType: input.mimeType,
+      coverAssetId: input.coverAssetId,
+      characterHint: input.characterHint,
+      appearanceHint: input.appearanceHint,
+      payload: input.payload,
+      motionPromptOverride: input.motionPromptOverride,
+      isCancelled,
+    })
+  }
+
+  if (input.jobKind === 'pullPublish') {
+    const pulled = await fetchLatestCharacterVideo({
+      characterId: input.characterId!,
+      sessionToken: token,
+      proxyUrl,
+    })
+    if (!pulled.ok || !pulled.videoAssetId) {
+      return { ...pulled, ok: false, error: pulled.error || '站内暂无视频' }
+    }
+    let coverAssetId = input.coverAssetId || ''
+    if (!coverAssetId) {
+      const portrait = await fetchCharacterPortraitPreview({
+        characterId: input.characterId!,
+        sessionToken: token,
+        proxyUrl,
+      })
+      coverAssetId = portrait.assetId || ''
+    }
+    if (!coverAssetId) {
+      return {
+        ok: false,
+        error: '有视频但缺少立绘 asset，无法绑封面发布',
+        videoAssetId: pulled.videoAssetId,
+        cdnUrl: pulled.cdnUrl,
+      }
+    }
+    const published = await setPreviewAndMaybePublish({
+      characterId: input.characterId!,
+      sessionToken: token,
+      proxyUrl,
+      coverAssetId,
+      videoAssetId: pulled.videoAssetId,
+      title: input.title,
+      description: input.description,
+      publish: true,
+    })
+    return {
+      ...published,
+      coverAssetId,
+      videoAssetId: pulled.videoAssetId,
+      cdnUrl: pulled.cdnUrl,
+    }
+  }
+
+  if (!imageBase64) return { ok: false, error: '请先粘贴参考图' }
+  return fullAutoToPublish({
+    imageBase64,
+    mimeType: input.mimeType,
+    proxyUrl,
+    sessionToken: token,
+    userHint: input.userHint,
+    runId: input.clientRunId,
+    runStartedAt,
+    isCancelled,
+    onProgress: (progress) => {
+      persistFullAutoProgress(item, { ...progress, runStartedAt })
+    },
+  })
+}
+
 async function drainFullAutoQueue() {
   if (fullAutoQueueRunning) return
   fullAutoQueueRunning = true
@@ -1037,11 +1333,13 @@ async function drainFullAutoQueue() {
         continue
       }
       if (!input.proxyUrl) {
+        sendFullAutoQueueProgress(item, 'failed', 0, undefined, '未配置出站代理（禁止直连）')
         item.resolve({ ok: false, runId: input.clientRunId, error: '未配置出站代理（禁止直连）' })
         cleanupStagedFullAutoImage(input)
         continue
       }
-      if (!input.imagePath || !fs.existsSync(input.imagePath)) {
+      if (input.jobKind === 'fullAuto' && (!input.imagePath || !fs.existsSync(input.imagePath))) {
+        sendFullAutoQueueProgress(item, 'failed', 0, undefined, '请先粘贴参考图')
         item.resolve({ ok: false, runId: input.clientRunId, error: '请先粘贴参考图' })
         cleanupStagedFullAutoImage(input)
         continue
@@ -1049,6 +1347,7 @@ async function drainFullAutoQueue() {
       const secrets = loadCreateCharSecrets()
       const token = secrets.adminSessionToken || input.sessionToken || ''
       if (!token) {
+        sendFullAutoQueueProgress(item, 'failed', 0, undefined, '请配置管理员 Bearer')
         item.resolve({ ok: false, runId: input.clientRunId, error: '请配置管理员 Bearer' })
         cleanupStagedFullAutoImage(input)
         continue
@@ -1057,37 +1356,21 @@ async function drainFullAutoQueue() {
       activeFullAutoRunId = input.clientRunId
       sendFullAutoQueueProgress(item, 'running', 0, runStartedAt)
       try {
-        const imageBase64 = fs.readFileSync(input.imagePath).toString('base64')
-        const result = await fullAutoToPublish({
-          imageBase64,
-          mimeType: input.mimeType,
-          proxyUrl: input.proxyUrl,
-          sessionToken: token,
-          userHint: input.userHint,
-          runId: input.clientRunId,
-          runStartedAt,
-          isCancelled: () => cancelledFullAutoRuns.has(input.clientRunId),
-          onProgress: (p) => {
-            persistFullAutoProgress(item, {
-              ...p,
-              runStartedAt,
-            })
-          },
-        })
+        const result = await executeCreateCharQueueItem(item, token, runStartedAt)
         if (!result.ok && !(result as { cancelled?: boolean }).cancelled) {
           sendFullAutoQueueProgress(
             item,
             'failed',
             0,
             runStartedAt,
-            typeof result.error === 'string' ? result.error : '全自动失败',
+            typeof result.error === 'string' ? result.error : '队列任务失败',
           )
         }
         persistFullAutoProgress(
           item,
           {
             ...result,
-            stage: result.ok ? 'published' : (result as { cancelled?: boolean }).cancelled ? 'cancelled' : 'failed',
+            stage: result.ok ? 'completed' : (result as { cancelled?: boolean }).cancelled ? 'cancelled' : 'failed',
             runStartedAt,
           },
           result.ok
@@ -1124,31 +1407,47 @@ async function drainFullAutoQueue() {
   }
 }
 
-ipcMain.handle('createChar:fullAutoPublish', async (_e, input: FullAutoQueueInput) => {
-  if (!input.clientRunId) return { ok: false, error: '缺少全自动 runId' }
-  if (!input.imageBase64) return { ok: false, error: '请先粘贴参考图' }
+async function enqueueCreateCharJob(
+  sender: WebContents,
+  input: CreateCharQueueInput,
+): Promise<Record<string, unknown>> {
+  if (!input.clientRunId) return { ok: false, error: '缺少队列 runId' }
   let imagePath = ''
-  try {
-    imagePath = stagedFullAutoImagePath(input.clientRunId)
-    fs.writeFileSync(imagePath, Buffer.from(input.imageBase64, 'base64'))
-  } catch (error) {
-    return {
-      ok: false,
-      error: `暂存参考图失败：${error instanceof Error ? error.message : String(error)}`,
+  if (input.imageBase64) {
+    try {
+      imagePath = stagedFullAutoImagePath(input.clientRunId)
+      fs.writeFileSync(imagePath, Buffer.from(input.imageBase64, 'base64'))
+    } catch (error) {
+      return {
+        ok: false,
+        error: `暂存参考图失败：${error instanceof Error ? error.message : String(error)}`,
+      }
     }
   }
   return new Promise<Record<string, unknown>>((resolve) => {
     // 排队数组只保留文件路径，避免 5 槽 base64 在主进程再复制一份。
-    const queuedInput: FullAutoQueueInput = { ...input, imageBase64: undefined, imagePath }
-    const item: FullAutoQueueItem = { input: queuedInput, sender: _e.sender, resolve }
+    const queuedInput: CreateCharQueueInput = {
+      ...input,
+      imageBase64: undefined,
+      imagePath: imagePath || undefined,
+    }
+    const item: CreateCharQueueItem = { input: queuedInput, sender, resolve }
     fullAutoQueue.push(item)
     sendFullAutoQueueProgress(item, 'queued', fullAutoQueue.length)
     refreshFullAutoQueuePositions()
     void drainFullAutoQueue()
   })
+}
+
+ipcMain.handle('createChar:enqueueJob', async (_e, input: CreateCharQueueInput) => {
+  return enqueueCreateCharJob(_e.sender, input)
 })
 
-ipcMain.handle('createChar:cancelFullAuto', async (_e, input: { runId?: string }) => {
+ipcMain.handle('createChar:fullAutoPublish', async (_e, input: Omit<CreateCharQueueInput, 'jobKind'>) => {
+  return enqueueCreateCharJob(_e.sender, { ...input, jobKind: 'fullAuto' })
+})
+
+async function cancelCreateCharJob(input: { runId?: string }) {
   const runId = input.runId?.trim()
   if (!runId) return { ok: false, error: '缺少 runId' }
   cancelledFullAutoRuns.add(runId)
@@ -1170,7 +1469,15 @@ ipcMain.handle('createChar:cancelFullAuto', async (_e, input: { runId?: string }
   }
   refreshFullAutoQueuePositions()
   return { ok: true }
-})
+}
+
+ipcMain.handle('createChar:cancelFullAuto', async (_e, input: { runId?: string }) =>
+  cancelCreateCharJob(input),
+)
+
+ipcMain.handle('createChar:cancelJob', async (_e, input: { runId?: string }) =>
+  cancelCreateCharJob(input),
+)
 
 ipcMain.handle(
   'createChar:refreshVideo',
