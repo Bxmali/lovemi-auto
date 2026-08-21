@@ -180,8 +180,8 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
     <section className="email-page feature-material-page" ref={pageRef}>
       <h1 className="page-title">创建特色素材</h1>
       <p className="page-desc">
-        输入一句自定义提示词，GPT 会补齐成年东亚角色、场景、制服、身体与镜头细节，再用 Image1-pro
-        生成 16:9 图片。此页使用独立队列，不影响创建角色队列。
+        输入一句自定义提示词，GPT 会产出完整中文设计说明，再压缩成英文密种子提交 Image1-pro（接口约
+        256 字节上限；官方还会做 prompt_enhancement）。此页使用独立队列，不影响创建角色队列。
       </p>
 
       <div className="settings-card" data-motion="card" style={{ marginBottom: 12 }}>
@@ -270,13 +270,13 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
                     </div>
                     {task.prompt ? (
                       <div className="settings-hint" style={{ marginTop: 8 }}>
-                        提交接口：{task.prompt}
+                        提交接口（英文密种子）：{task.prompt}
                       </div>
                     ) : null}
                     {task.detail || task.prompt ? (
                       <details style={{ marginTop: 8 }}>
                         <summary className="settings-hint" style={{ cursor: 'pointer' }}>
-                          查看 GPT 完整设计说明
+                          查看 GPT 完整中文设计说明
                         </summary>
                         <div
                           className="settings-hint"

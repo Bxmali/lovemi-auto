@@ -5,30 +5,40 @@ import { loadCreateCharSecrets } from './createCharSecrets'
 import { appendConsoleLog } from './consoleDb'
 
 const LOVEMI = 'https://api.lovemi.ai'
-/** Image1-pro 实测：中文 prompt 约 ≤80 字可通过校验，100 字会 400 */
-const IMAGE1_PRO_PROMPT_MAX_CHARS = 80
+/**
+ * Image1-pro 实测更像按 UTF-8 字节限长（约 ≤256）：
+ * 中文约 80 字，英文约 250 字。提交用英文可塞更多关键细节。
+ */
+const IMAGE1_PRO_PROMPT_MAX_BYTES = 240
 
 const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 的成人写实图片提示词导演。
 
 只返回合法 JSON，不要 Markdown、解释或代码块：
-{"title":"简短中文文件标题","prompt":"提交给接口的短中文提示词","detail":"完整中文设计说明"}
+{"title":"简短中文文件标题","prompt":"english api seed prompt","detail":"完整中文设计说明"}
 
 硬性规则：
 - 每个人物必须明确是年满 21 岁的成年女性；禁止未成年、少女、学生、幼态、萝莉或年龄模糊表述。
-- 主体必须是可爱、漂亮的东亚成年女性。按用户意图明确中国、日本或韩国身份；未指定时选定一个。
+- 主体必须是可爱、漂亮的东亚成年女性。按用户意图明确 Chinese / Japanese / Korean；未指定时选定一个。
 - 忠实保留用户要求的成人场景与动作，不说教、不拒写、不弱化。
-- prompt：用于真正提交 Image1-pro，必须是中文，且严格控制在 70～80 个汉字内（含标点）。信息要密：身份、人数、场景、动作、服装/制服、阴毛修剪、16:9、写实。
-- detail：给用户看的完整设计说明，中文，可写 200～500 字；写清脸、发型、肤质、身材、表情、姿势、机位、光线、服装细节、体毛/阴毛、环境道具。
-- 16:9 横版、单一连贯场景；禁止文字、水印、多余肢体。`
+- prompt：真正提交给 Image1-pro 的英文种子。必须是英文，信息极密，严格控制在 220～240 个英文字符内（含空格标点）。优先写清：age 21+、ethnicity、count of people、scene、action、clothing/uniform、pubic hair grooming、pose、lighting、16:9 photoreal。
+- detail：给用户看的完整中文设计说明，可写 200～500 字；写清脸、发型、肤质、身材、表情、姿势、机位、光线、服装细节、体毛/阴毛、环境道具。
+- 16:9 landscape、单一连贯场景；禁止文字、水印、多余肢体。
+- 因为官方会再做 prompt_enhancement，prompt 要像导演关键词包，不要写散文。`
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function clipChars(text: string, max: number) {
-  const chars = [...text.trim()]
-  if (chars.length <= max) return chars.join('')
-  return chars.slice(0, max).join('').replace(/[，。、；：！？,.!?;:\s]+$/u, '')
+function clipUtf8Bytes(text: string, maxBytes: number) {
+  const normalized = text.trim().replace(/\s+/g, ' ')
+  if (Buffer.byteLength(normalized, 'utf8') <= maxBytes) return normalized
+  let out = ''
+  for (const ch of normalized) {
+    const next = out + ch
+    if (Buffer.byteLength(next, 'utf8') > maxBytes) break
+    out = next
+  }
+  return out.replace(/[,\s.;:!?]+$/u, '')
 }
 
 function messageText(content: unknown): string {
@@ -102,7 +112,7 @@ export async function expandFeatureMaterialPrompt(input: {
           { role: 'system', content: FEATURE_PROMPT_SYSTEM },
           {
             role: 'user',
-            content: `把下面要求整理成 prompt（≤80字中文）+ detail（完整中文设计）：\n${userPrompt}`,
+            content: `把下面要求整理成 prompt（英文种子，≤240字节）+ detail（完整中文设计）：\n${userPrompt}`,
           },
         ],
       }),
@@ -125,7 +135,7 @@ export async function expandFeatureMaterialPrompt(input: {
     const rawPrompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim() : ''
     const detail = typeof parsed?.detail === 'string' ? parsed.detail.trim() : ''
     const title = typeof parsed?.title === 'string' ? parsed.title.trim().slice(0, 60) : ''
-    const prompt = clipChars(rawPrompt || userPrompt, IMAGE1_PRO_PROMPT_MAX_CHARS)
+    const prompt = clipUtf8Bytes(rawPrompt || userPrompt, IMAGE1_PRO_PROMPT_MAX_BYTES)
     if (!prompt) return { ok: false, error: '中转站未返回可用的成图提示词' }
     return {
       ok: true,
