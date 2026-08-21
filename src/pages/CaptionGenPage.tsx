@@ -138,6 +138,14 @@ export function CaptionGenPage({ active }: { active: boolean }) {
   const [hasApiKey, setHasApiKey] = useState(false)
   const [meta, setMeta] = useState('')
 
+  const [tgBaseUrl, setTgBaseUrl] = useState('http://127.0.0.1:8788')
+  const [tgPeer, setTgPeer] = useState('kindredaiav1')
+  const [tgSkipPosted, setTgSkipPosted] = useState(true)
+  const [tgBatchBusy, setTgBatchBusy] = useState(false)
+  const [tgPreview, setTgPreview] = useState('')
+  const [tgLog, setTgLog] = useState<string[]>([])
+  const [showTgPanel, setShowTgPanel] = useState(false)
+
   const s2t = useMemo(() => Converter({ from: 'cn', to: 'tw' }), [])
   const t2s = useMemo(() => Converter({ from: 'tw', to: 'cn' }), [])
 
@@ -153,6 +161,118 @@ export function CaptionGenPage({ active }: { active: boolean }) {
     })()
   }, [active])
 
+  useEffect(() => {
+    if (!active || !window.lovemi?.tgautoSettingsGet) return
+    const api = window.lovemi
+    void (async () => {
+      const s = await api.tgautoSettingsGet()
+      setTgBaseUrl(s.baseUrl || 'http://127.0.0.1:8788')
+      setTgPeer(s.peer || 'kindredaiav1')
+      setTgSkipPosted(s.skipPosted !== false)
+    })()
+  }, [active])
+
+  useEffect(() => {
+    if (!active || !window.lovemi?.onTgautoBatchProgress) return
+    const api = window.lovemi
+    return api.onTgautoBatchProgress((p) => {
+      const line = p.message || p.error || p.phase
+      if (line) setTgLog((prev) => [...prev.slice(-80), line])
+      if (p.phase === 'summary' || p.phase === 'cancelled') {
+        setTgBatchBusy(false)
+        if (p.message) setToast(p.message)
+      }
+    })
+  }, [active, setToast])
+
+  const refreshTgPreview = useCallback(async () => {
+    if (!window.lovemi?.tgautoPreview) return
+    const p = await window.lovemi.tgautoPreview()
+    setTgPreview(
+      `${p.resourceDir} · 共 ${p.total} 组 · 待发 ${p.pending} · 已记录 ${p.posted}` +
+        (p.characters.length ? ` · 下一批：${p.characters.slice(0, 8).join('、')}${p.characters.length > 8 ? '…' : ''}` : ''),
+    )
+  }, [])
+
+  useEffect(() => {
+    if (!active || !showTgPanel) return
+    void refreshTgPreview()
+  }, [active, showTgPanel, refreshTgPreview])
+
+  const onTgautoBatch = async () => {
+    const api = window.lovemi
+    if (!api?.tgautoBatchStart || !api.tgautoHealth) {
+      setToast('请在 Electron 桌面窗口操作')
+      return
+    }
+    if (!hasApiKey) {
+      setToast('请先在「创建角色」页保存中转站 API Key')
+      return
+    }
+    setShowTgPanel(true)
+
+    const baseUrl = tgBaseUrl.trim() || 'http://127.0.0.1:8788'
+    setTgLog((prev) => [...prev.slice(-80), `正在检测 TGAuto 连接：${baseUrl} …`])
+    setToast('正在检测是否已连接 TGAuto…')
+    const health = await api.tgautoHealth({ baseUrl })
+    if (!health.ok) {
+      const reason = health.error || '未知错误'
+      setTgLog((prev) => [...prev.slice(-80), `未连接 TGAuto：${reason}`])
+      window.alert(
+        `未连接到 TGAuto，无法群发。\n\n地址：${health.baseUrl}\n原因：${reason}\n\n请先启动 TGAuto（API :8788）后再试。`,
+      )
+      setToast('未连接 TGAuto，已取消操作')
+      return
+    }
+
+    const linked = window.confirm(
+      `已检测到 TGAuto 连接正常。\n\n地址：${health.baseUrl}\n目标频道：${tgPeer.trim() || '（未填）'}\n\n是否继续「推特资源一键群发」？\n（分类 → Lovemi 文案 → 相册群发，每个角色只发一遍）`,
+    )
+    if (!linked) {
+      setTgLog((prev) => [...prev.slice(-80), '已取消：用户未确认连接后继续'])
+      setToast('已取消群发')
+      return
+    }
+
+    const outbound = await resolveProxyUrl()
+    if (!outbound.proxyUrl) {
+      setToast(outbound.error || '无代理')
+      return
+    }
+    await api.tgautoSettingsSave?.({
+      baseUrl,
+      peer: tgPeer.trim(),
+      skipPosted: tgSkipPosted,
+    })
+    const preview = await api.tgautoPreview?.()
+    const pending = preview?.pending ?? 0
+    if (!pending) {
+      setToast(preview?.total ? '没有待发角色（可能都已发过）' : '推特资源里没有 jpg+mp4 成对角色')
+      await refreshTgPreview()
+      return
+    }
+    const ok = window.confirm(
+      `即将发送 ${pending} 个角色到 ${tgPeer.trim() || '频道'}。\n每个角色只发一遍（三号轮流）。\n\n确认开始？`,
+    )
+    if (!ok) return
+    setTgBatchBusy(true)
+    setTgLog([`TGAuto 已连接 · 开始群发 ${pending} 个角色 → ${tgPeer.trim()}`])
+    try {
+      const res = await api.tgautoBatchStart({
+        proxyUrl: outbound.proxyUrl,
+        baseUrl,
+        peer: tgPeer.trim(),
+        skipPosted: tgSkipPosted,
+      })
+      if (!res.ok && res.error) setToast(res.error)
+      else setToast(`群发结束：成功 ${res.posted} · 失败 ${res.failed} · 跳过 ${res.skipped}`)
+      await refreshTgPreview()
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : '群发异常')
+    } finally {
+      setTgBatchBusy(false)
+    }
+  }
   const ingestFile = useCallback(
     async (file: File | Blob, nameHint?: string) => {
       const mime = file.type || ''
@@ -367,7 +487,8 @@ export function CaptionGenPage({ active }: { active: boolean }) {
     <section className="email-page create-char-page" ref={pageRef} style={{ display: active ? undefined : 'none' }}>
       <h1 className="page-title">文案生成</h1>
       <p className="page-desc">
-        Ctrl+V 可连续粘贴最多 2 个图片/视频。生成前可选「标准文案」或「推特评论·诱惑」（更骚：舔脚/摸摸我等，无 #标签，默认繁体）。
+        Ctrl+V 可连续粘贴最多 2 个图片/视频。生成前可选「标准文案」或「推特评论·诱惑」。
+        右侧青绿按钮可一键扫描「推特资源」并经 TGAuto 群发。
         {hasApiKey ? ' · API Key 已配置' : ' · 尚未配置 API Key'}
       </p>
 
@@ -413,7 +534,109 @@ export function CaptionGenPage({ active }: { active: boolean }) {
         <button type="button" className="btn btn-ghost" onClick={clearAll}>
           清空
         </button>
+        <button
+          type="button"
+          className="btn btn-tgauto"
+          disabled={busy || tgBatchBusy}
+          title="扫描下载目录「推特资源」→ 按角色分类 → Lovemi 文案 → TGAuto 相册群发"
+          onClick={() => {
+            setShowTgPanel(true)
+            void onTgautoBatch()
+          }}
+        >
+          {tgBatchBusy ? 'TGAuto 群发中…' : '◈ TGAuto · 推特资源一键群发'}
+        </button>
+        {tgBatchBusy ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => void window.lovemi?.tgautoBatchCancel?.()}
+          >
+            取消群发
+          </button>
+        ) : null}
       </div>
+
+      {showTgPanel ? (
+        <div className="tgauto-batch-panel" data-motion="card">
+          <h3>TGAuto 一键群发（与上方「粘贴生成」独立）</h3>
+          <p className="settings-hint" style={{ margin: '0 0 10px' }}>
+            自动扫描推特资源里每个角色的 jpg+mp4，生成 Lovemi 标准文案，用转发号轮流发相册（不是文件）。已发过的默认跳过。
+          </p>
+          <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10, margin: 0 }}>
+            <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              TGAuto
+              <input
+                className="field"
+                style={{ width: 200 }}
+                value={tgBaseUrl}
+                disabled={tgBatchBusy}
+                onChange={(e) => setTgBaseUrl(e.target.value)}
+                placeholder="http://127.0.0.1:8788"
+              />
+            </label>
+            <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              目标频道
+              <input
+                className="field"
+                style={{ width: 160 }}
+                value={tgPeer}
+                disabled={tgBatchBusy}
+                onChange={(e) => setTgPeer(e.target.value)}
+                placeholder="kindredaiav1"
+              />
+            </label>
+            <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={tgSkipPosted}
+                disabled={tgBatchBusy}
+                onChange={(e) => setTgSkipPosted(e.target.checked)}
+              />
+              跳过已发
+            </label>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={tgBatchBusy}
+              onClick={() => void refreshTgPreview()}
+            >
+              刷新预览
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={tgBatchBusy}
+              onClick={() => {
+                void (async () => {
+                  const api = window.lovemi
+                  if (!api?.tgautoHealth) {
+                    setToast('请在 Electron 桌面窗口操作')
+                    return
+                  }
+                  const baseUrl = tgBaseUrl.trim() || 'http://127.0.0.1:8788'
+                  setToast('正在检测 TGAuto…')
+                  const health = await api.tgautoHealth({ baseUrl })
+                  if (health.ok) {
+                    setTgLog((prev) => [...prev.slice(-80), `TGAuto 已连接：${health.baseUrl}`])
+                    window.alert(`已连接到 TGAuto\n\n地址：${health.baseUrl}`)
+                    setToast('TGAuto 已连接')
+                  } else {
+                    const reason = health.error || '未知错误'
+                    setTgLog((prev) => [...prev.slice(-80), `未连接 TGAuto：${reason}`])
+                    window.alert(`未连接到 TGAuto\n\n地址：${health.baseUrl}\n原因：${reason}`)
+                    setToast('未连接 TGAuto')
+                  }
+                })()
+              }}
+            >
+              检测连接
+            </button>
+          </div>
+          {tgPreview ? <div className="settings-hint" style={{ marginTop: 8 }}>{tgPreview}</div> : null}
+          {tgLog.length ? <div className="tgauto-batch-log">{tgLog.join('\n')}</div> : null}
+        </div>
+      ) : null}
 
       <div
         className="card-grid"

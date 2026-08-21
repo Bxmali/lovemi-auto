@@ -312,6 +312,58 @@ button:disabled {
   background: transparent;
 }
 
+/** 文案页 · TGAuto 一键群发（与粉色主按钮刻意区分） */
+.btn-tgauto {
+  background: linear-gradient(135deg, #0d9488 0%, #0f766e 55%, #115e59 100%);
+  border: 1px solid rgba(45, 212, 191, 0.55);
+  color: #ecfdf5;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.25), 0 8px 20px rgba(15, 118, 110, 0.28);
+}
+
+.btn-tgauto:hover:not(:disabled) {
+  filter: brightness(1.08);
+  border-color: rgba(94, 234, 212, 0.75);
+}
+
+.btn-tgauto:disabled {
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+.tgauto-batch-panel {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  background:
+    linear-gradient(145deg, rgba(13, 148, 136, 0.12), rgba(15, 23, 42, 0.35)),
+    var(--panel-2, transparent);
+}
+
+.tgauto-batch-panel h3 {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  color: #5eead4;
+  font-weight: 700;
+}
+
+.tgauto-batch-log {
+  margin-top: 10px;
+  max-height: 180px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.22);
+}
+
 .stats {
   margin-left: auto;
   color: var(--muted);

@@ -417,7 +417,7 @@ export function FeatureMaterialPage({ active }: { active: boolean }) {
     <section className="email-page feature-material-page" ref={pageRef}>
       <h1 className="page-title">创建特色素材</h1>
       <p className="page-desc">
-        可选官网宽高比与画质；GPT 扩写【真人写实】中文提示词后提交 Image1-pro。密钥粘贴后失焦自动保存，并显示脱敏提示。
+        可选官网宽高比与画质；GPT 扩写最长约 2000 字【高颜值软萌真人写真】提示词（美脸清晰、柔光水光肌、露骨动作不弱化）。多人只细写前景美脸。密钥失焦自动保存。
       </p>
 
       <div className="settings-card" data-motion="card" style={{ marginBottom: 12 }}>

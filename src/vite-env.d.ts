@@ -641,6 +641,73 @@ interface LovemiBridge {
     kinkLabel?: string
     rawPreview?: string
   }>
+  tgautoSettingsGet: () => Promise<{
+    baseUrl: string
+    peer: string
+    accountIds: number[]
+    skipPosted: boolean
+  }>
+  tgautoSettingsSave: (patch: {
+    baseUrl?: string
+    peer?: string
+    accountIds?: number[]
+    skipPosted?: boolean
+  }) => Promise<{
+    baseUrl: string
+    peer: string
+    accountIds: number[]
+    skipPosted: boolean
+  }>
+  tgautoHealth: (input?: { baseUrl?: string }) => Promise<{
+    ok: boolean
+    error?: string
+    baseUrl: string
+  }>
+  tgautoPreview: () => Promise<{
+    ok: boolean
+    settings: {
+      baseUrl: string
+      peer: string
+      accountIds: number[]
+      skipPosted: boolean
+    }
+    resourceDir: string
+    total: number
+    pending: number
+    posted: number
+    characters: string[]
+  }>
+  tgautoBatchStart: (input: {
+    proxyUrl: string
+    baseUrl?: string
+    peer?: string
+    accountIds?: number[]
+    skipPosted?: boolean
+  }) => Promise<{
+    ok: boolean
+    error?: string
+    posted: number
+    failed: number
+    skipped: number
+    total: number
+  }>
+  tgautoBatchCancel: () => Promise<{ ok: boolean; running: boolean }>
+  tgautoBatchRunning: () => Promise<{ running: boolean }>
+  onTgautoBatchProgress: (
+    cb: (progress: {
+      phase: string
+      index?: number
+      total?: number
+      char?: string
+      accountId?: number
+      message?: string
+      ok?: boolean
+      error?: string
+      posted?: number
+      failed?: number
+      skipped?: number
+    }) => void,
+  ) => () => void
 }
 
 interface Window {

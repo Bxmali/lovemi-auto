@@ -45,6 +45,16 @@ import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemi
 import { autoVideoAndPublish, fullAutoToPublish, generateMotionVideoOnly } from './lovemiAutoPublish'
 import { cacheLovemiCdnMedia, mediaCacheDir } from './lovemiMediaCache'
 import { generateSocialCaption } from './lovemiCaptionGen'
+import {
+  cancelTgautoBatch,
+  checkTgautoHealth,
+  isTgautoBatchRunning,
+  loadTgautoBridgeSettings,
+  previewTgautoBatch,
+  runTgautoBatchPost,
+  saveTgautoBridgeSettings,
+  type TgautoBatchProgress,
+} from './tgautoBatchPost'
 import { generateFeatureMaterial } from './lovemiFeatureMaterial'
 import {
   deleteFeatureMaterial,
@@ -662,6 +672,65 @@ ipcMain.handle(
       characterName: input.characterName,
       userHint: input.userHint,
       style: input.style,
+    })
+  },
+)
+
+ipcMain.handle('caption:tgautoSettingsGet', () => loadTgautoBridgeSettings(APP_DATA))
+ipcMain.handle(
+  'caption:tgautoSettingsSave',
+  (
+    _e,
+    patch: {
+      baseUrl?: string
+      peer?: string
+      accountIds?: number[]
+      skipPosted?: boolean
+    },
+  ) => saveTgautoBridgeSettings(APP_DATA, patch || {}),
+)
+ipcMain.handle('caption:tgautoHealth', async (_e, input?: { baseUrl?: string }) => {
+  const settings = loadTgautoBridgeSettings(APP_DATA)
+  return checkTgautoHealth(input?.baseUrl || settings.baseUrl)
+})
+ipcMain.handle('caption:tgautoPreview', () =>
+  previewTgautoBatch(APP_DATA, resolveTwitterDownloadsParent()),
+)
+ipcMain.handle('caption:tgautoBatchCancel', () => {
+  cancelTgautoBatch()
+  return { ok: true as const, running: isTgautoBatchRunning() }
+})
+ipcMain.handle('caption:tgautoBatchRunning', () => ({ running: isTgautoBatchRunning() }))
+ipcMain.handle(
+  'caption:tgautoBatchStart',
+  async (
+    event,
+    input: {
+      proxyUrl?: string
+      baseUrl?: string
+      peer?: string
+      accountIds?: number[]
+      skipPosted?: boolean
+    },
+  ) => {
+    if (!input?.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）', posted: 0, failed: 0, skipped: 0, total: 0 }
+    const sender = event.sender
+    const onProgress = (p: TgautoBatchProgress) => {
+      try {
+        if (!sender.isDestroyed()) sender.send('caption:tgautoBatchProgress', p)
+      } catch {
+        /* ignore */
+      }
+    }
+    return runTgautoBatchPost({
+      appData: APP_DATA,
+      downloadsParent: resolveTwitterDownloadsParent(),
+      proxyUrl: input.proxyUrl,
+      baseUrl: input.baseUrl,
+      peer: input.peer,
+      accountIds: input.accountIds,
+      skipPosted: input.skipPosted,
+      onProgress,
     })
   },
 )

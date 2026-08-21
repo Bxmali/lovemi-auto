@@ -723,4 +723,83 @@ contextBridge.exposeInMainWorld('lovemi', {
       kinkLabel?: string
       rawPreview?: string
     }>,
+
+  tgautoSettingsGet: () =>
+    ipcRenderer.invoke('caption:tgautoSettingsGet') as Promise<{
+      baseUrl: string
+      peer: string
+      accountIds: number[]
+      skipPosted: boolean
+    }>,
+  tgautoSettingsSave: (patch: {
+    baseUrl?: string
+    peer?: string
+    accountIds?: number[]
+    skipPosted?: boolean
+  }) =>
+    ipcRenderer.invoke('caption:tgautoSettingsSave', patch) as Promise<{
+      baseUrl: string
+      peer: string
+      accountIds: number[]
+      skipPosted: boolean
+    }>,
+  tgautoHealth: (input?: { baseUrl?: string }) =>
+    ipcRenderer.invoke('caption:tgautoHealth', input) as Promise<{
+      ok: boolean
+      error?: string
+      baseUrl: string
+    }>,
+  tgautoPreview: () =>
+    ipcRenderer.invoke('caption:tgautoPreview') as Promise<{
+      ok: boolean
+      settings: {
+        baseUrl: string
+        peer: string
+        accountIds: number[]
+        skipPosted: boolean
+      }
+      resourceDir: string
+      total: number
+      pending: number
+      posted: number
+      characters: string[]
+    }>,
+  tgautoBatchStart: (input: {
+    proxyUrl: string
+    baseUrl?: string
+    peer?: string
+    accountIds?: number[]
+    skipPosted?: boolean
+  }) =>
+    ipcRenderer.invoke('caption:tgautoBatchStart', input) as Promise<{
+      ok: boolean
+      error?: string
+      posted: number
+      failed: number
+      skipped: number
+      total: number
+    }>,
+  tgautoBatchCancel: () =>
+    ipcRenderer.invoke('caption:tgautoBatchCancel') as Promise<{ ok: boolean; running: boolean }>,
+  tgautoBatchRunning: () =>
+    ipcRenderer.invoke('caption:tgautoBatchRunning') as Promise<{ running: boolean }>,
+  onTgautoBatchProgress: (
+    cb: (progress: {
+      phase: string
+      index?: number
+      total?: number
+      char?: string
+      accountId?: number
+      message?: string
+      ok?: boolean
+      error?: string
+      posted?: number
+      failed?: number
+      skipped?: number
+    }) => void,
+  ) => {
+    const handler = (_event: unknown, progress: Parameters<typeof cb>[0]) => cb(progress)
+    ipcRenderer.on('caption:tgautoBatchProgress', handler)
+    return () => ipcRenderer.removeListener('caption:tgautoBatchProgress', handler)
+  },
 })
