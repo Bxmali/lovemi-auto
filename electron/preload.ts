@@ -627,6 +627,33 @@ contextBridge.exposeInMainWorld('lovemi', {
       error?: string
       running?: boolean
     }>,
+  featureMaterialList: () =>
+    ipcRenderer.invoke('featureMaterial:list') as Promise<{
+      ok: boolean
+      items: Array<{
+        runId: string
+        userPrompt: string
+        stage: string
+        title?: string
+        prompt?: string
+        detail?: string
+        jobId?: string
+        assetId?: string
+        cdnUrl?: string
+        cacheUrl?: string
+        localPath?: string
+        twitterPath?: string
+        watermarkApplied?: boolean
+        error?: string
+        createdAt: number
+        updatedAt: number
+      }>
+    }>,
+  featureMaterialDelete: (input: { runId: string }) =>
+    ipcRenderer.invoke('featureMaterial:delete', input) as Promise<{
+      ok: boolean
+      error?: string
+    }>,
   onFeatureMaterialProgress: (
     cb: (progress: {
       runId: string
@@ -642,6 +669,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       cdnUrl?: string
       cacheUrl?: string
       twitterPath?: string
+      watermarkApplied?: boolean
     }) => void,
   ) => {
     const handler = (_event: unknown, progress: Parameters<typeof cb>[0]) => cb(progress)

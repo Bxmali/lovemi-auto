@@ -522,16 +522,12 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         write({ motionPreviewUrl: res.cacheUrl })
         const wantTwitter = useCreateCharStore.getState().autoDownloadWatermark !== false
         if (res.twitterPath) {
-          pushStepUnique(slotId, 'ok', '视频已存推特资源（含水印）')
+          pushStepUnique(slotId, 'ok', '视频已存推特资源')
           setToast(`槽${slotId}：视频已存推特资源`)
           return true
         }
-        pushStepUnique(slotId, 'ok', wantTwitter ? '视频预览已缓存' : '视频预览已缓存 · 未导出推特水印')
-        setToast(
-          wantTwitter
-            ? `槽${slotId}：视频预览已就绪`
-            : `槽${slotId}：视频预览已就绪（水印导出已关）`,
-        )
+        pushStepUnique(slotId, 'ok', '视频预览已缓存')
+        setToast(`槽${slotId}：视频预览已就绪`)
         return !wantTwitter
       } else {
         write({ motionPreviewUrl: cdnOrUrl })
@@ -621,13 +617,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
             return true
           } else {
-            const wantTwitter = useCreateCharStore.getState().autoDownloadWatermark !== false
-            pushStepUnique(
-              slotId,
-              'ok',
-              wantTwitter ? '立绘预览已缓存' : '立绘预览已缓存 · 未导出推特水印',
-            )
-            return !wantTwitter
+            pushStepUnique(slotId, 'ok', '立绘预览已缓存')
+            return false
           }
         }
 
@@ -1696,11 +1687,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         `自动视频并发布已完成 · ${name}${res.listingId ? ` · ${res.listingId}` : ''}`,
       )
       setToast(
-        `【槽${slot} 成功】${name} 视频已生成并提交发布${res.listingId ? ` · ${res.listingId}` : ''} · 预览已回填${
-          useCreateCharStore.getState().autoDownloadWatermark !== false
-            ? '，推特资源文件夹也会存一份'
-            : '（水印导出已关）'
-        }`,
+        `【槽${slot} 成功】${name} 视频已生成并提交发布${res.listingId ? ` · ${res.listingId}` : ''} · 预览已回填，推特资源文件夹也会存一份`,
         16000,
       )
     } finally {
@@ -2195,11 +2182,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                 void window.lovemi?.createCharSaveConfig?.({ autoDownloadWatermark: next }).then((cfg) => {
                   if (cfg) patch({ autoDownloadWatermark: cfg.autoDownloadWatermark !== false })
                 })
-                setToast(next ? '已开启：自动下载带水印推特资源' : '已关闭：只缓存预览，不导出推特水印')
+                setToast(next ? '已开启：导出时敲粉色水印' : '已关闭敲水印：自动下载原图到推特资源')
               }}
               style={{ marginRight: 6 }}
             />
-            自动下载带水印
+            导出时敲水印
           </label>
         </div>
         <div className="settings-hint" style={{ marginTop: 8 }}>
@@ -2208,8 +2195,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           {hasApiKey ? 'API Key OK' : '请填写 API Key'}
           。
           {autoDownloadWatermark
-            ? '立绘/视频会写入所选目录下的「推特资源」（含水印）。'
-            : '已关闭水印导出：只做本地预览缓存，不写入「推特资源」。'}
+            ? '立绘/视频会写入「推特资源」并敲粉色水印。'
+            : '立绘/视频仍会自动下载到「推特资源」，但不敲水印（原图）。'}
         </div>
       </div>
 

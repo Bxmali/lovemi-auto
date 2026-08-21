@@ -145,7 +145,7 @@ export async function applyPinkOfficialWatermark(input: {
   }
 }
 
-/** 复制到 Downloads/推特资源，文件名=角色名（重名自动 _2/_3），JPEG/MP4 + 粉色水印 */
+/** 复制到 Downloads/推特资源，文件名=角色名（重名自动 _2/_3），JPEG/MP4；可选粉色水印 */
 export async function copyToTwitterResource(input: {
   localPath: string
   displayName: string
@@ -153,6 +153,8 @@ export async function copyToTwitterResource(input: {
   kind?: 'portrait' | 'video' | 'media'
   /** @deprecated 推特资源统一 jpg/mp4，忽略 CDN 原扩展名 */
   extOverride?: string
+  /** 默认 true；false 时只转 TG 友好格式、不打水印（原图语义） */
+  applyWatermark?: boolean
 }): Promise<{ ok: boolean; destPath?: string; error?: string }> {
   try {
     if (!input.localPath || !fs.existsSync(input.localPath)) {
@@ -177,39 +179,59 @@ export async function copyToTwitterResource(input: {
       if (n > 99) break
     }
 
-    const marked = await applyPinkOfficialWatermark({
-      srcPath: input.localPath,
-      destPath: dest,
-      kind: isVideo ? 'video' : input.kind || 'portrait',
-    })
-    if (marked.ok && marked.destPath) {
-      appendConsoleLog({
-        level: 'info',
-        action: 'create_char',
-        message: `已保存到推特资源（含水印·TG友好）· ${path.basename(marked.destPath)}`,
+    const wantWatermark = input.applyWatermark !== false
+    if (wantWatermark) {
+      const marked = await applyPinkOfficialWatermark({
+        srcPath: input.localPath,
+        destPath: dest,
+        kind: isVideo ? 'video' : input.kind || 'portrait',
       })
-      return { ok: true, destPath: marked.destPath }
+      if (marked.ok && marked.destPath) {
+        appendConsoleLog({
+          level: 'info',
+          action: 'create_char',
+          message: `已保存到推特资源（含水印·TG友好）· ${path.basename(marked.destPath)}`,
+        })
+        return { ok: true, destPath: marked.destPath }
+      }
+      // 水印失败：仍转成 jpg/mp4，绝不原样落 webp
+      const plain = await applyPinkOfficialWatermark({
+        srcPath: input.localPath,
+        destPath: dest,
+        kind: isVideo ? 'video' : input.kind || 'portrait',
+        noWatermark: true,
+      })
+      if (plain.ok && plain.destPath) {
+        appendConsoleLog({
+          level: 'warn',
+          action: 'create_char',
+          message: `水印失败已转TG友好格式 · ${path.basename(plain.destPath)} · ${marked.error?.slice(0, 100) || ''}`,
+        })
+        return { ok: true, destPath: plain.destPath }
+      }
+      return {
+        ok: false,
+        error: plain.error || marked.error || '导出推特资源失败',
+      }
     }
 
-    // 水印失败：仍转成 jpg/mp4，绝不原样落 webp
-    const plain = await applyPinkOfficialWatermark({
+    const plainOnly = await applyPinkOfficialWatermark({
       srcPath: input.localPath,
       destPath: dest,
       kind: isVideo ? 'video' : input.kind || 'portrait',
       noWatermark: true,
     })
-    if (plain.ok && plain.destPath) {
+    if (plainOnly.ok && plainOnly.destPath) {
       appendConsoleLog({
-        level: 'warn',
+        level: 'info',
         action: 'create_char',
-        message: `水印失败已转TG友好格式 · ${path.basename(plain.destPath)} · ${marked.error?.slice(0, 100) || ''}`,
+        message: `已保存到推特资源（原图·无水印）· ${path.basename(plainOnly.destPath)}`,
       })
-      return { ok: true, destPath: plain.destPath }
+      return { ok: true, destPath: plainOnly.destPath }
     }
-
     return {
       ok: false,
-      error: plain.error || marked.error || '导出推特资源失败',
+      error: plainOnly.error || '导出推特资源失败',
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -269,6 +291,8 @@ export async function cacheLovemiCdnMedia(input: {
   /** 若提供则额外复制到 Downloads/推特资源/{displayName}.ext */
   saveDisplayName?: string
   downloadsPath?: string
+  /** 导出推特资源时是否打粉色水印；默认 true */
+  applyWatermark?: boolean
   kind?: 'portrait' | 'video' | 'media'
   characterId?: string
   assetId?: string
@@ -281,6 +305,7 @@ export async function cacheLovemiCdnMedia(input: {
   cacheUrl?: string
   bytes?: number
   twitterPath?: string
+  watermarkApplied?: boolean
 }> {
   const url = (input.cdnUrl || '').trim()
   if (!url.startsWith('http')) return { ok: false, error: '无效 CDN URL' }
@@ -462,13 +487,19 @@ export async function cacheLovemiCdnMedia(input: {
         downloadsPath: input.downloadsPath,
         kind: input.kind,
         extOverride: path.extname(localPath) || undefined,
+        applyWatermark: input.applyWatermark !== false,
       })
       if (copied.ok && copied.destPath) {
         twitterPath = copied.destPath
         try {
           fs.writeFileSync(
             markerPath,
-            JSON.stringify({ destPath: copied.destPath, at: Date.now(), url: url.split('?')[0] }),
+            JSON.stringify({
+              destPath: copied.destPath,
+              at: Date.now(),
+              url: url.split('?')[0],
+              watermarkApplied: input.applyWatermark !== false,
+            }),
             'utf8',
           )
         } catch {
@@ -485,6 +516,8 @@ export async function cacheLovemiCdnMedia(input: {
     cacheUrl: `lovemi-cache://media/${encodeURIComponent(fileName)}`,
     bytes,
     twitterPath,
+    watermarkApplied:
+      input.saveDisplayName && input.downloadsPath ? input.applyWatermark !== false : undefined,
   }
 }
 

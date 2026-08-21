@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type CSSProperties } from 'react'
 import gsap from 'gsap'
 
 type Props = {
@@ -7,7 +7,7 @@ type Props = {
   onClose: () => void
 }
 
-/** GSAP 淡入缩放弹窗；动画只在挂载时跑一次，避免无限刷新 */
+/** GSAP 淡入缩放弹窗；横版大图需完整可见，勿用 overflow:hidden + 过窄 maxWidth 裁切 */
 export function MediaLightbox({ src, kind = 'image', onClose }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -49,6 +49,15 @@ export function MediaLightbox({ src, kind = 'image', onClose }: Props) {
       .to(backdrop, { opacity: 0, duration: 0.2, ease: 'power2.in' }, 0)
   }
 
+  const mediaStyle: CSSProperties = {
+    display: 'block',
+    maxWidth: 'min(96vw, 1600px)',
+    maxHeight: 'calc(100vh - 48px)',
+    width: 'auto',
+    height: 'auto',
+    objectFit: 'contain',
+  }
+
   return (
     <div
       ref={backdropRef}
@@ -65,19 +74,21 @@ export function MediaLightbox({ src, kind = 'image', onClose }: Props) {
         justifyContent: 'center',
         padding: 24,
         cursor: 'zoom-out',
+        boxSizing: 'border-box',
       }}
     >
       <div
         ref={panelRef}
         onClick={(e) => e.stopPropagation()}
         style={{
-          maxWidth: 'min(96vw, 1100px)',
-          maxHeight: '92vh',
+          maxWidth: 'min(96vw, 1600px)',
+          maxHeight: 'calc(100vh - 48px)',
           borderRadius: 14,
-          overflow: 'hidden',
+          overflow: 'visible',
           boxShadow: '0 24px 80px rgba(0,0,0,0.45)',
           background: '#120e16',
           cursor: 'default',
+          lineHeight: 0,
         }}
       >
         {kind === 'video' ? (
@@ -90,15 +101,10 @@ export function MediaLightbox({ src, kind = 'image', onClose }: Props) {
             onLoadedData={(e) => {
               void e.currentTarget.play().catch(() => {})
             }}
-            style={{ display: 'block', maxWidth: '96vw', maxHeight: '92vh' }}
+            style={mediaStyle}
           />
         ) : (
-          <img
-            src={src}
-            alt="preview"
-            draggable={false}
-            style={{ display: 'block', maxWidth: '96vw', maxHeight: '92vh', objectFit: 'contain' }}
-          />
+          <img src={src} alt="preview" draggable={false} style={mediaStyle} />
         )}
       </div>
     </div>

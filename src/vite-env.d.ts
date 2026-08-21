@@ -544,14 +544,40 @@ interface LovemiBridge {
     jobId?: string
     assetId?: string
     cdnUrl?: string
-    cacheUrl?: string
-    localPath?: string
-    twitterPath?: string
-  }>
+      cacheUrl?: string
+      localPath?: string
+      twitterPath?: string
+      watermarkApplied?: boolean
+    }>
   featureMaterialCancel: (input: { runId: string }) => Promise<{
     ok: boolean
     error?: string
     running?: boolean
+  }>
+  featureMaterialList: () => Promise<{
+    ok: boolean
+    items: Array<{
+      runId: string
+      userPrompt: string
+      stage: string
+      title?: string
+      prompt?: string
+      detail?: string
+      jobId?: string
+      assetId?: string
+      cdnUrl?: string
+      cacheUrl?: string
+      localPath?: string
+      twitterPath?: string
+      watermarkApplied?: boolean
+      error?: string
+      createdAt: number
+      updatedAt: number
+    }>
+  }>
+  featureMaterialDelete: (input: { runId: string }) => Promise<{
+    ok: boolean
+    error?: string
   }>
   onFeatureMaterialProgress: (
     cb: (progress: {
@@ -568,6 +594,7 @@ interface LovemiBridge {
       cdnUrl?: string
       cacheUrl?: string
       twitterPath?: string
+      watermarkApplied?: boolean
     }) => void,
   ) => () => void
   captionGenerate: (input: {

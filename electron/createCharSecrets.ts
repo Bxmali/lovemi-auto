@@ -12,7 +12,7 @@ export type CreateCharSecrets = {
   adminAccountId?: string
   /** 推特资源父目录；其下自动建「推特资源」。空=系统 Downloads */
   downloadsDir?: string
-  /** 立绘/视频缓存成功后，是否自动导出含水印的「推特资源」 */
+  /** 导出推特资源时是否敲粉色水印；下载本身始终开启 */
   autoDownloadWatermark?: boolean
 }
 

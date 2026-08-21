@@ -47,6 +47,11 @@ import { cacheLovemiCdnMedia, mediaCacheDir } from './lovemiMediaCache'
 import { generateSocialCaption } from './lovemiCaptionGen'
 import { generateFeatureMaterial } from './lovemiFeatureMaterial'
 import {
+  deleteFeatureMaterial,
+  listFeatureMaterials,
+  upsertFeatureMaterial,
+} from './featureMaterialDb'
+import {
   loadCreateCharReferenceImage,
   loadCreateCharUiState,
   loadRecoverableCreateCharRuns,
@@ -735,28 +740,49 @@ async function drainFeatureMaterialQueue() {
         })
         let cached: Record<string, unknown> = {}
         if (result.ok && result.cdnUrl) {
-          const exportWatermark = secrets.autoDownloadWatermark !== false
+          const applyWatermark = secrets.autoDownloadWatermark !== false
           cached = await cacheLovemiCdnMedia({
             cdnUrl: result.cdnUrl,
             proxyUrl: input.proxyUrl,
             appData: APP_DATA,
-            saveDisplayName: exportWatermark ? result.title || '特色素材' : undefined,
-            downloadsPath: exportWatermark ? resolveTwitterDownloadsParent() : undefined,
+            saveDisplayName: result.title || '特色素材',
+            downloadsPath: resolveTwitterDownloadsParent(),
+            applyWatermark,
             kind: 'media',
             assetId: result.assetId,
             runId: input.runId,
           })
         }
-        const response = {
+        const response: Record<string, unknown> = {
           ...result,
           ...cached,
           runId: input.runId,
           runStartedAt,
           cancelled: cancelledFeatureMaterialRuns.has(input.runId),
         }
+        const stage = result.ok ? 'completed' : response.cancelled ? 'cancelled' : 'failed'
+        upsertFeatureMaterial({
+          runId: input.runId,
+          userPrompt: input.userPrompt,
+          title: typeof response.title === 'string' ? response.title : undefined,
+          prompt: typeof response.prompt === 'string' ? response.prompt : undefined,
+          detail: typeof response.detail === 'string' ? response.detail : undefined,
+          jobId: typeof response.jobId === 'string' ? response.jobId : undefined,
+          assetId: typeof response.assetId === 'string' ? response.assetId : undefined,
+          cdnUrl: typeof response.cdnUrl === 'string' ? response.cdnUrl : undefined,
+          cacheUrl: typeof response.cacheUrl === 'string' ? response.cacheUrl : undefined,
+          localPath: typeof response.localPath === 'string' ? response.localPath : undefined,
+          twitterPath: typeof response.twitterPath === 'string' ? response.twitterPath : undefined,
+          watermarkApplied:
+            typeof response.watermarkApplied === 'boolean' ? response.watermarkApplied : undefined,
+          stage,
+          error: typeof response.error === 'string' ? response.error : undefined,
+          createdAt: runStartedAt,
+          updatedAt: Date.now(),
+        })
         broadcastFeatureMaterialProgress({
           ...response,
-          stage: result.ok ? 'completed' : response.cancelled ? 'cancelled' : 'failed',
+          stage,
         })
         item.resolve(response)
       } catch (error) {
@@ -806,6 +832,16 @@ ipcMain.handle('featureMaterial:cancel', async (_event, input: { runId?: string 
   }
   refreshFeatureMaterialQueuePositions()
   return { ok: true, running: activeFeatureMaterialRunId === runId }
+})
+
+ipcMain.handle('featureMaterial:list', async () => {
+  return { ok: true, items: listFeatureMaterials(80) }
+})
+
+ipcMain.handle('featureMaterial:delete', async (_event, input: { runId?: string }) => {
+  const runId = input?.runId?.trim()
+  if (!runId) return { ok: false, error: '缺少 runId' }
+  return deleteFeatureMaterial({ runId, appData: APP_DATA })
 })
 
 ipcMain.handle(
@@ -1518,14 +1554,15 @@ ipcMain.handle(
   ) => {
     if (!input.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）' }
     if (!input.cdnUrl) return { ok: false, error: '缺少 cdnUrl' }
-    const exportWatermark = loadCreateCharSecrets().autoDownloadWatermark !== false
+    const applyWatermark = loadCreateCharSecrets().autoDownloadWatermark !== false
     const displayName = input.displayName?.trim() || undefined
     return cacheLovemiCdnMedia({
       cdnUrl: input.cdnUrl,
       proxyUrl: input.proxyUrl,
       appData: APP_DATA,
-      saveDisplayName: exportWatermark ? displayName : undefined,
-      downloadsPath: exportWatermark ? resolveTwitterDownloadsParent() : undefined,
+      saveDisplayName: displayName,
+      downloadsPath: displayName ? resolveTwitterDownloadsParent() : undefined,
+      applyWatermark,
       kind: input.kind || 'media',
       characterId: input.characterId,
       assetId: input.assetId,

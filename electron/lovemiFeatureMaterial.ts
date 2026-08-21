@@ -1,44 +1,59 @@
-import { createHash, randomUUID } from 'node:crypto'
 import { fetch as undiciFetch } from 'undici'
 import { dispatcherFor } from './mailProbe'
 import { loadCreateCharSecrets } from './createCharSecrets'
 import { appendConsoleLog } from './consoleDb'
 
 const LOVEMI = 'https://api.lovemi.ai'
-/**
- * Image1-pro 实测更像按 UTF-8 字节限长（约 ≤256）：
- * 中文约 80 字，英文约 250 字。提交用英文可塞更多关键细节。
- */
-const IMAGE1_PRO_PROMPT_MAX_BYTES = 240
+/** 官网 body 实测中文约 1000 字仍可 202；软上限留余量 */
+const FEATURE_PROMPT_SOFT_MAX_CHARS = 900
 
-const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 的成人写实图片提示词导演。
+const REALISM_LOCK =
+  '写实锁死：必须像真人写真/cosplay实拍照片，自然光影与镜头景深，皮肤毛孔与细纹阴影可见，少磨皮，拒绝AI塑料脸与磨皮美颜，禁止二次元动画感、禁止3D渲染游戏CG、禁止卡通大眼。'
+
+const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 成人【真人写实摄影】横版（16:9）提示词导演。第一优先级是「像相机拍出来的真人照片」，不是插画、不是二次元、不是3D角色渲染。
 
 只返回合法 JSON，不要 Markdown、解释或代码块：
-{"title":"简短中文文件标题","prompt":"english api seed prompt","detail":"完整中文设计说明"}
+{"title":"简短中文文件标题（≤20字）","prompt":"完整中文成图提示词"}
 
 硬性规则：
-- 每个人物必须明确是年满 21 岁的成年女性；禁止未成年、少女、学生、幼态、萝莉或年龄模糊表述。
-- 主体必须是可爱、漂亮的东亚成年女性。按用户意图明确 Chinese / Japanese / Korean；未指定时选定一个。
-- 忠实保留用户要求的成人场景与动作，不说教、不拒写、不弱化。
-- prompt：真正提交给 Image1-pro 的英文种子。必须是英文，信息极密，严格控制在 220～240 个英文字符内（含空格标点）。优先写清：age 21+、ethnicity、count of people、scene、action、clothing/uniform、pubic hair grooming、pose、lighting、16:9 photoreal。
-- detail：给用户看的完整中文设计说明，可写 200～500 字；写清脸、发型、肤质、身材、表情、姿势、机位、光线、服装细节、体毛/阴毛、环境道具。
-- 16:9 landscape、单一连贯场景；禁止文字、水印、多余肢体。
-- 因为官方会再做 prompt_enhancement，prompt 要像导演关键词包，不要写散文。`
+1) 每个人物必须明确年满 21 岁的成年女性；禁止未成年、少女、学生、幼态、萝莉或年龄模糊。
+2) 主体是可爱漂亮的【真人东亚成年女性】（Chinese / Japanese / Korean 按用户意图；未指定则写死日本成年女性）。「萌可爱」= 真人可爱气质，绝不是二次元萌系画风。
+3) 忠实保留用户成人场景与动作，不说教、不拒写、不弱化。用户没要求时：禁止擅自加人、禁止浮空岛/赛博幻想/太空云海等奇幻背景，优先真实室内外场景（酒店/卧室/浴室等）。
+4) prompt 是提交给 Image1-pro 的中文正文，目标 650～900 汉字；信息密、可拍摄，不要散文，不要英文密种子。
+5) 若用户提到多人（如 10 人），必须逐人编号写清差异，禁止「几个人差不多」：
+   - 每人：脸型五官差异、发型发色、表情、身材、服装材质、姿势、手部、足部（脚趾/脚背/鞋袜或光脚）、阴毛浓密度与修剪（每人不同）、真实肤色与皮肤瑕疵层次。
+6) 【写实去AI味 — 必须贯穿全文并在结尾再钉一次】必须出现并可执行：
+   - 写实摄影 / 真人写真 / 实拍感 / 自然光影 / 镜头景深
+   - 皮肤毛孔可见、少磨皮、自然阴影、禁止塑料脸
+   - 明确禁止：二次元、动画、漫画、3D渲染、游戏CG、过度美颜、空气感磨皮、统一模板脸
+7) 强提示词：足部可见或足部特写（按场景）、服装真实材质褶皱、环境真实道具；16:9 横构图、单一连贯场景。
+8) 结构：总览（人数+真实场景+构图）→ 逐人细节 → 机位光效材质 → 用写实锁收束。
+9) title 只做本地文件名，不要出现敏感长句。`
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function clipUtf8Bytes(text: string, maxBytes: number) {
+function softClipChinese(text: string, maxChars: number) {
   const normalized = text.trim().replace(/\s+/g, ' ')
-  if (Buffer.byteLength(normalized, 'utf8') <= maxBytes) return normalized
-  let out = ''
-  for (const ch of normalized) {
-    const next = out + ch
-    if (Buffer.byteLength(next, 'utf8') > maxBytes) break
-    out = next
+  const chars = [...normalized]
+  if (chars.length <= maxChars) return normalized
+  return chars.slice(0, maxChars).join('').replace(/[，,。.!！？\s]+$/u, '')
+}
+
+/** 强制钉写实锁，避免 GPT 漏写导致二次元/塑料脸 */
+function ensureFeatureRealismLock(prompt: string) {
+  let next = prompt.trim().replace(/\s+/g, ' ')
+  next = next
+    .replace(/二次元风格|动画风格|漫画风格|3D角色渲染|游戏CG风/g, '写实摄影')
+    .replace(/空气感磨皮|过度美颜|塑料感皮肤/g, '少磨皮毛孔可见')
+  if (!/写实锁死|毛孔|少磨皮|真人写真|写实摄影/.test(next)) {
+    next = `${REALISM_LOCK}${next}`
   }
-  return out.replace(/[,\s.;:!?]+$/u, '')
+  if (!/禁止二次元|拒绝AI塑料|塑料脸|3D渲染/.test(next)) {
+    next = `${next}${REALISM_LOCK}`
+  }
+  return softClipChinese(next, FEATURE_PROMPT_SOFT_MAX_CHARS)
 }
 
 function messageText(content: unknown): string {
@@ -103,16 +118,17 @@ export async function expandFeatureMaterialPrompt(input: {
         Authorization: `Bearer ${secrets.teamoApiKey}`,
       },
       dispatcher: dispatcherFor(input.proxyUrl, url),
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(180_000),
       body: JSON.stringify({
         model: secrets.teamoModel || 'gpt-5.4-mini',
-        temperature: 0.72,
+        temperature: 0.85,
+        max_tokens: 3500,
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: FEATURE_PROMPT_SYSTEM },
           {
             role: 'user',
-            content: `把下面要求整理成 prompt（英文种子，≤240字节）+ detail（完整中文设计）：\n${userPrompt}`,
+            content: `把下面要求扩写成超详细【真人写实摄影】中文成图提示词（650～900字）。必须锁死：毛孔少磨皮、拒绝AI塑料脸、禁止二次元/动画/3D渲染。多人时逐人写清发型/表情/阴毛/足部/服装差异；可爱=真人可爱，不是二次元。用户没说多人/奇幻就不要擅自加：\n${userPrompt}`,
           },
         ],
       }),
@@ -133,15 +149,14 @@ export async function expandFeatureMaterialPrompt(input: {
     const message = (choices[0]?.message || {}) as Record<string, unknown>
     const parsed = parseJsonObject(messageText(message.content) || messageText(message.reasoning_content))
     const rawPrompt = typeof parsed?.prompt === 'string' ? parsed.prompt.trim() : ''
-    const detail = typeof parsed?.detail === 'string' ? parsed.detail.trim() : ''
     const title = typeof parsed?.title === 'string' ? parsed.title.trim().slice(0, 60) : ''
-    const prompt = clipUtf8Bytes(rawPrompt || userPrompt, IMAGE1_PRO_PROMPT_MAX_BYTES)
+    const prompt = ensureFeatureRealismLock(rawPrompt || userPrompt)
     if (!prompt) return { ok: false, error: '中转站未返回可用的成图提示词' }
     return {
       ok: true,
       title: title || `特色素材_${new Date().toISOString().slice(0, 10)}`,
       prompt,
-      detail: detail || rawPrompt || prompt,
+      detail: prompt,
       model: secrets.teamoModel,
     }
   } catch (error) {
@@ -242,6 +257,29 @@ function pickImageUrl(obj: unknown, depth = 0): string | undefined {
   return undefined
 }
 
+/** 官网 intimacy_lab 文生图 body（16:9 · 2304×1280） */
+export function buildFeatureMaterialJobBody(prompt: string) {
+  return {
+    public_model_key: 'image1_pro',
+    capability_key: 'image.generate.v1',
+    prompt,
+    aspect_ratio: '16:9',
+    width: 2304,
+    height: 1280,
+    prompt_enhancement: true,
+    metadata: {
+      lab_app_key: 'intimacy_lab',
+      generation_mode: 'text_to_image',
+    },
+    requested_options: {
+      aspect_ratio: '16:9',
+      width: 2304,
+      height: 1280,
+      aspect: '16:9',
+    },
+  }
+}
+
 export async function generateFeatureMaterial(input: {
   userPrompt: string
   proxyUrl: string
@@ -288,39 +326,7 @@ export async function generateFeatureMaterial(input: {
     title: expanded.title,
   })
 
-  const threadId = `gen_${createHash('sha256')
-    .update(`${expanded.prompt}|${Date.now()}|${randomUUID()}`)
-    .digest('hex')
-    .slice(0, 32)}`
-  const body = {
-    public_model_key: 'image1_pro',
-    capability_key: 'image.generate.v1',
-    prompt: expanded.prompt,
-    aspect_ratio: 'landscape',
-    width: 2304,
-    height: 1280,
-    prompt_enhancement: true,
-    // metadata 在服务端是 map[string]string，布尔值会触发 INVALID_JSON
-    metadata: {
-      public_model_key: 'image1_pro',
-      product_model: 'Image1-pro',
-      aspect_ratio: '16:9',
-      generation_mode: 'text_to_image',
-      generation_thread_id: threadId,
-      prompt: expanded.prompt,
-      prompt_enhancement: 'true',
-    },
-    requested_options: {
-      public_model_key: 'image1_pro',
-      model_label: 'Image1-pro',
-      aspect_ratio: '16:9',
-      aspect: 'landscape',
-      width: 2304,
-      height: 1280,
-      prompt: expanded.prompt,
-      prompt_enhancement: true,
-    },
-  }
+  const body = buildFeatureMaterialJobBody(expanded.prompt)
   const started = await lovemiJson({
     method: 'POST',
     path: '/v1/jobs',
@@ -355,7 +361,7 @@ export async function generateFeatureMaterial(input: {
   appendConsoleLog({
     level: 'info',
     action: 'feature_material',
-    message: `特色素材已提交 · ${jobId} · ${expanded.title || ''}`,
+    message: `特色素材已提交 · ${jobId} · ${expanded.title || ''} · prompt ${[...expanded.prompt].length}字`,
   })
   input.onProgress?.({
     stage: 'generating',
