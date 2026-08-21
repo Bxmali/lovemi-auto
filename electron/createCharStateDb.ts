@@ -137,15 +137,32 @@ export function saveCreateCharRun(snapshot: CreateCharRunSnapshot) {
 export function loadRecoverableCreateCharRuns(): CreateCharRunSnapshot[] {
   const rows = openAccountsDb()
     .prepare(
-      `SELECT snapshot_json FROM create_char_runs
+      `SELECT run_id, slot, epoch, status, stage, snapshot_json FROM create_char_runs
        WHERE status IN ('queued', 'running', 'interrupted')
        ORDER BY updated_at ASC`,
     )
-    .all() as Array<{ snapshot_json: string }>
+    .all() as Array<{
+      run_id: string
+      slot: number
+      epoch: number
+      status: CreateCharRunSnapshot['status']
+      stage: string
+      snapshot_json: string
+    }>
   const out: CreateCharRunSnapshot[] = []
   for (const row of rows) {
     try {
-      out.push(JSON.parse(row.snapshot_json) as CreateCharRunSnapshot)
+      const snapshot = JSON.parse(row.snapshot_json) as CreateCharRunSnapshot
+      // 进程启动时会先把 DB 列标记为 interrupted，但历史 snapshot_json 仍可能写着
+      // running。结构化列才是权威状态，否则重载页面会把多个旧任务同时显示为运行中。
+      out.push({
+        ...snapshot,
+        runId: row.run_id,
+        slot: row.slot,
+        epoch: row.epoch,
+        status: row.status,
+        stage: row.stage,
+      })
     } catch {
       /* ignore one corrupt run */
     }

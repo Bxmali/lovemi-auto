@@ -34,6 +34,7 @@ const NAV: { id: NavId; label: string; ready: boolean }[] = [
 export default function App() {
   const rootRef = useRef<HTMLDivElement>(null)
   const [nav, setNav] = useState<NavId>('email')
+  const [appVersion, setAppVersion] = useState('0.0.0')
   const replaceAccounts = useEmailStore((s) => s.replaceAccounts)
   const hydrated = useEmailStore((s) => s.hydrated)
   const accountCount = useEmailStore((s) => s.accounts.length)
@@ -49,6 +50,10 @@ export default function App() {
     if (rootRef.current) runEnterShell(rootRef.current)
     hydrateSettings()
     useSecurityLogStore.getState().hydrate()
+    void window.lovemi
+      ?.getAppVersion()
+      .then((version) => setAppVersion(version || '0.0.0'))
+      .catch(() => setAppVersion('0.0.0'))
   }, [])
 
   useEffect(() => {
@@ -216,6 +221,9 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-version" title="当前安装版本">
+          v{appVersion}
+        </div>
       </aside>
       <main className="main" data-motion="main">
         {nav === 'email' ? <EmailHub /> : null}

@@ -318,6 +318,8 @@ ipcMain.handle('accounts:load', () => loadAccountsJson())
 
 ipcMain.handle('accounts:save', (_event, plaintext: string) => saveAccountsJson(plaintext))
 
+ipcMain.handle('app:getVersion', () => app.getVersion())
+
 ipcMain.handle('mail:probe', async (_event, input: ProbeInput) => {
   if (!input.proxyUrl) {
     return {

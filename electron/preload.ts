@@ -76,6 +76,7 @@ export type LoginResult = {
 }
 
 contextBridge.exposeInMainWorld('lovemi', {
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion') as Promise<string>,
   loadAccounts: () => ipcRenderer.invoke('accounts:load') as Promise<string | null>,
   saveAccounts: (plaintext: string) =>
     ipcRenderer.invoke('accounts:save', plaintext) as Promise<{ ok: boolean; encrypted: boolean }>,

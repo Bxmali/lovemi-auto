@@ -106,6 +106,16 @@ button:disabled {
   gap: 4px;
 }
 
+.sidebar-version {
+  margin-top: auto;
+  padding: 0 8px;
+  color: rgba(255, 255, 255, 0.38);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+
 .nav-item {
   appearance: none;
   border: 1px solid transparent;

@@ -234,7 +234,22 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       if (cancelled) return
       const runtime = await window.lovemi?.createCharRuntimeState?.()
       if (cancelled) return
-      const liveRuns = (runtime?.ok ? runtime.runs : []).filter(
+      const runtimeRuns = runtime?.ok ? runtime.runs || [] : []
+      const reportedRunning = runtimeRuns.filter((run) => run.status === 'running')
+      // 主队列严格串行，任意时刻最多一个 running。旧版本重启时可能只更新 SQLite
+      // 的 status 列、未同步 snapshot_json，导致多个历史任务被误报为 running。
+      // 当前真正运行的任务一定有最新的 runStartedAt，其余按 interrupted 清掉。
+      const activeRunningRun = reportedRunning.reduce<(typeof reportedRunning)[number] | undefined>(
+        (latest, run) =>
+          !latest || Number(run.runStartedAt || 0) > Number(latest.runStartedAt || 0) ? run : latest,
+        undefined,
+      )
+      const normalizedRuntimeRuns = runtimeRuns.map((run) =>
+        run.status === 'running' && run.runId !== activeRunningRun?.runId
+          ? { ...run, status: 'interrupted' as const }
+          : run,
+      )
+      const liveRuns = normalizedRuntimeRuns.filter(
         (run) => run.status === 'queued' || run.status === 'running',
       )
       const liveBySlot = new Map<number, (typeof liveRuns)[number]>()
@@ -257,7 +272,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         })
       }
 
-      for (const run of runtime?.ok ? runtime.runs || [] : []) {
+      for (const run of normalizedRuntimeRuns) {
         const slot = Number(run.slot) as CreateCharSlotId
         if (!CREATE_CHAR_SLOT_IDS.includes(slot)) continue
         const cur = useCreateCharStore.getState().slots[slot]

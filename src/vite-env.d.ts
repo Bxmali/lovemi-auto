@@ -78,6 +78,7 @@ interface LoginResult {
 }
 
 interface LovemiBridge {
+  getAppVersion: () => Promise<string>
   loadAccounts: () => Promise<string | null>
   saveAccounts: (plaintext: string) => Promise<{ ok: boolean; encrypted: boolean; error?: string; count?: number }>
   probeAccount: (input: ProbeInput) => Promise<ProbeResult>
