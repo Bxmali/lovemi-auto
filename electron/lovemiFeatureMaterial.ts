@@ -2,6 +2,13 @@ import { fetch as undiciFetch } from 'undici'
 import { dispatcherFor } from './mailProbe'
 import { loadCreateCharSecrets } from './createCharSecrets'
 import { appendConsoleLog } from './consoleDb'
+import {
+  isFeatureAspect,
+  isFeatureMp,
+  resolveFeatureImageSize,
+  type FeatureAspect,
+  type FeatureMp,
+} from './featureImageSize'
 
 const LOVEMI = 'https://api.lovemi.ai'
 /** 官网 body 实测中文约 1000 字仍可 202；软上限留余量 */
@@ -10,7 +17,7 @@ const FEATURE_PROMPT_SOFT_MAX_CHARS = 900
 const REALISM_LOCK =
   '写实锁死：必须像真人写真/cosplay实拍照片，自然光影与镜头景深，皮肤毛孔与细纹阴影可见，少磨皮，拒绝AI塑料脸与磨皮美颜，禁止二次元动画感、禁止3D渲染游戏CG、禁止卡通大眼。'
 
-const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 成人【真人写实摄影】横版（16:9）提示词导演。第一优先级是「像相机拍出来的真人照片」，不是插画、不是二次元、不是3D角色渲染。
+const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 成人【真人写实摄影】横/竖版提示词导演。第一优先级是「像相机拍出来的真人照片」，不是插画、不是二次元、不是3D角色渲染。
 
 只返回合法 JSON，不要 Markdown、解释或代码块：
 {"title":"简短中文文件标题（≤20字）","prompt":"完整中文成图提示词"}
@@ -19,15 +26,15 @@ const FEATURE_PROMPT_SYSTEM = `你是 Image1-pro 成人【真人写实摄影】�
 1) 每个人物必须明确年满 21 岁的成年女性；禁止未成年、少女、学生、幼态、萝莉或年龄模糊。
 2) 主体是可爱漂亮的【真人东亚成年女性】（Chinese / Japanese / Korean 按用户意图；未指定则写死日本成年女性）。「萌可爱」= 真人可爱气质，绝不是二次元萌系画风。
 3) 忠实保留用户成人场景与动作，不说教、不拒写、不弱化。用户没要求时：禁止擅自加人、禁止浮空岛/赛博幻想/太空云海等奇幻背景，优先真实室内外场景（酒店/卧室/浴室等）。
-4) prompt 是提交给 Image1-pro 的中文正文，目标 650～900 汉字；信息密、可拍摄，不要散文，不要英文密种子。
+4) prompt 是提交给 Image1-pro 的中文正文，目标 650～900 汉字；信息密、可拍摄，不要散文，不要英文密种子。严格按用户消息里的构图比例写景别。
 5) 若用户提到多人（如 10 人），必须逐人编号写清差异，禁止「几个人差不多」：
    - 每人：脸型五官差异、发型发色、表情、身材、服装材质、姿势、手部、足部（脚趾/脚背/鞋袜或光脚）、阴毛浓密度与修剪（每人不同）、真实肤色与皮肤瑕疵层次。
 6) 【写实去AI味 — 必须贯穿全文并在结尾再钉一次】必须出现并可执行：
    - 写实摄影 / 真人写真 / 实拍感 / 自然光影 / 镜头景深
    - 皮肤毛孔可见、少磨皮、自然阴影、禁止塑料脸
    - 明确禁止：二次元、动画、漫画、3D渲染、游戏CG、过度美颜、空气感磨皮、统一模板脸
-7) 强提示词：足部可见或足部特写（按场景）、服装真实材质褶皱、环境真实道具；16:9 横构图、单一连贯场景。
-8) 结构：总览（人数+真实场景+构图）→ 逐人细节 → 机位光效材质 → 用写实锁收束。
+7) 强提示词：足部可见或足部特写（按场景）、服装真实材质褶皱、环境真实道具；单一连贯场景。
+8) 结构：总览（人数+真实场景+构图比例）→ 逐人细节 → 机位光效材质 → 用写实锁收束。
 9) title 只做本地文件名，不要出现敏感长句。`
 
 function sleep(ms: number) {
@@ -96,6 +103,7 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
 export async function expandFeatureMaterialPrompt(input: {
   userPrompt: string
   proxyUrl: string
+  aspectRatio?: FeatureAspect
 }): Promise<{
   ok: boolean
   error?: string
@@ -108,6 +116,7 @@ export async function expandFeatureMaterialPrompt(input: {
   if (!secrets.teamoApiKey) return { ok: false, error: '未配置中转站 API Key' }
   const userPrompt = input.userPrompt.trim()
   if (!userPrompt) return { ok: false, error: '请输入自定义提示词' }
+  const aspect = isFeatureAspect(input.aspectRatio) ? input.aspectRatio : '16:9'
   const url = `${secrets.teamoApiBase.replace(/\/$/, '')}/chat/completions`
   try {
     const response = await undiciFetch(url, {
@@ -128,7 +137,7 @@ export async function expandFeatureMaterialPrompt(input: {
           { role: 'system', content: FEATURE_PROMPT_SYSTEM },
           {
             role: 'user',
-            content: `把下面要求扩写成超详细【真人写实摄影】中文成图提示词（650～900字）。必须锁死：毛孔少磨皮、拒绝AI塑料脸、禁止二次元/动画/3D渲染。多人时逐人写清发型/表情/阴毛/足部/服装差异；可爱=真人可爱，不是二次元。用户没说多人/奇幻就不要擅自加：\n${userPrompt}`,
+            content: `构图锁定 ${aspect}。把下面要求扩写成超详细【真人写实摄影】中文成图提示词（650～900字）。必须锁死：毛孔少磨皮、拒绝AI塑料脸、禁止二次元/动画/3D渲染。多人时逐人写清发型/表情/阴毛/足部/服装差异；可爱=真人可爱，不是二次元。用户没说多人/奇幻就不要擅自加：\n${userPrompt}`,
           },
         ],
       }),
@@ -257,25 +266,30 @@ function pickImageUrl(obj: unknown, depth = 0): string | undefined {
   return undefined
 }
 
-/** 官网 intimacy_lab 文生图 body（16:9 · 2304×1280） */
-export function buildFeatureMaterialJobBody(prompt: string) {
+/** 官网 intimacy_lab 文生图 body */
+export function buildFeatureMaterialJobBody(
+  prompt: string,
+  aspectRatio: FeatureAspect = '16:9',
+  imageMp: FeatureMp = 3,
+) {
+  const size = resolveFeatureImageSize(aspectRatio, imageMp)
   return {
     public_model_key: 'image1_pro',
     capability_key: 'image.generate.v1',
     prompt,
-    aspect_ratio: '16:9',
-    width: 2304,
-    height: 1280,
+    aspect_ratio: size.aspect_ratio,
+    width: size.width,
+    height: size.height,
     prompt_enhancement: true,
     metadata: {
       lab_app_key: 'intimacy_lab',
       generation_mode: 'text_to_image',
     },
     requested_options: {
-      aspect_ratio: '16:9',
-      width: 2304,
-      height: 1280,
-      aspect: '16:9',
+      aspect_ratio: size.aspect_ratio,
+      width: size.width,
+      height: size.height,
+      aspect: size.aspect_ratio,
     },
   }
 }
@@ -284,6 +298,8 @@ export async function generateFeatureMaterial(input: {
   userPrompt: string
   proxyUrl: string
   sessionToken: string
+  aspectRatio?: FeatureAspect
+  imageMp?: FeatureMp
   isCancelled?: () => boolean
   onProgress?: (progress: {
     stage: string
@@ -303,11 +319,20 @@ export async function generateFeatureMaterial(input: {
   jobId?: string
   assetId?: string
   cdnUrl?: string
+  aspectRatio?: FeatureAspect
+  imageMp?: FeatureMp
+  width?: number
+  height?: number
 }> {
+  const aspectRatio = isFeatureAspect(input.aspectRatio) ? input.aspectRatio : '16:9'
+  const imageMp = isFeatureMp(Number(input.imageMp)) ? (Number(input.imageMp) as FeatureMp) : 3
+  const size = resolveFeatureImageSize(aspectRatio, imageMp)
+
   input.onProgress?.({ stage: 'expanding' })
   const expanded = await expandFeatureMaterialPrompt({
     userPrompt: input.userPrompt,
     proxyUrl: input.proxyUrl,
+    aspectRatio,
   })
   if (!expanded.ok || !expanded.prompt) return expanded
   if (input.isCancelled?.()) {
@@ -317,6 +342,10 @@ export async function generateFeatureMaterial(input: {
       title: expanded.title,
       prompt: expanded.prompt,
       detail: expanded.detail,
+      aspectRatio,
+      imageMp,
+      width: size.width,
+      height: size.height,
     }
   }
   input.onProgress?.({
@@ -326,7 +355,7 @@ export async function generateFeatureMaterial(input: {
     title: expanded.title,
   })
 
-  const body = buildFeatureMaterialJobBody(expanded.prompt)
+  const body = buildFeatureMaterialJobBody(expanded.prompt, aspectRatio, imageMp)
   const started = await lovemiJson({
     method: 'POST',
     path: '/v1/jobs',
@@ -346,6 +375,10 @@ export async function generateFeatureMaterial(input: {
       prompt: expanded.prompt,
       detail: expanded.detail,
       model: expanded.model,
+      aspectRatio,
+      imageMp,
+      width: size.width,
+      height: size.height,
     }
   }
   const jobId = pickByPrefix(started.data, 'job_')
@@ -356,12 +389,16 @@ export async function generateFeatureMaterial(input: {
       title: expanded.title,
       prompt: expanded.prompt,
       detail: expanded.detail,
+      aspectRatio,
+      imageMp,
+      width: size.width,
+      height: size.height,
     }
   }
   appendConsoleLog({
     level: 'info',
     action: 'feature_material',
-    message: `特色素材已提交 · ${jobId} · ${expanded.title || ''} · prompt ${[...expanded.prompt].length}字`,
+    message: `特色素材已提交 · ${jobId} · ${aspectRatio} · ${imageMp}MP · ${size.width}×${size.height} · ${expanded.title || ''} · prompt ${[...expanded.prompt].length}字`,
   })
   input.onProgress?.({
     stage: 'generating',
@@ -382,6 +419,10 @@ export async function generateFeatureMaterial(input: {
         title: expanded.title,
         prompt: expanded.prompt,
         detail: expanded.detail,
+        aspectRatio,
+        imageMp,
+        width: size.width,
+        height: size.height,
       }
     }
     const job = await lovemiJson({
@@ -418,6 +459,10 @@ export async function generateFeatureMaterial(input: {
         title: expanded.title,
         prompt: expanded.prompt,
         detail: expanded.detail,
+        aspectRatio,
+        imageMp,
+        width: size.width,
+        height: size.height,
       }
     }
     if (/complete|succeed|success|done/i.test(lastStatus)) {
@@ -451,6 +496,10 @@ export async function generateFeatureMaterial(input: {
           jobId,
           assetId,
           cdnUrl,
+          aspectRatio,
+          imageMp,
+          width: size.width,
+          height: size.height,
         }
       }
     }
@@ -463,5 +512,9 @@ export async function generateFeatureMaterial(input: {
     prompt: expanded.prompt,
     detail: expanded.detail,
     jobId,
+    aspectRatio,
+    imageMp,
+    width: size.width,
+    height: size.height,
   }
 }

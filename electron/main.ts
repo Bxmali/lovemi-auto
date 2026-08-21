@@ -570,12 +570,17 @@ ipcMain.handle(
       adminAccountId?: string
       downloadsDir?: string
       autoDownloadWatermark?: boolean
+      featureAspectRatio?: string
+      featureImageMp?: number
     },
   ) => {
     const patch = { ...(input || {}) } as Partial<CreateCharSecrets>
     if (typeof patch.adminSessionToken === 'string') {
       // 允许粘贴 "Bearer xxx"
       patch.adminSessionToken = patch.adminSessionToken.replace(/^Bearer\s+/i, '').trim()
+    }
+    if (typeof patch.teamoApiKey === 'string') {
+      patch.teamoApiKey = patch.teamoApiKey.trim()
     }
     if (typeof patch.downloadsDir === 'string') {
       patch.downloadsDir = patch.downloadsDir.trim()
@@ -666,6 +671,8 @@ type FeatureMaterialQueueInput = {
   userPrompt: string
   proxyUrl?: string
   sessionToken?: string
+  aspectRatio?: string
+  imageMp?: number
 }
 
 type FeatureMaterialQueueItem = {
@@ -726,10 +733,14 @@ async function drainFeatureMaterialQueue() {
         runStartedAt,
       })
       try {
+        const secretsAspect = secrets.featureAspectRatio
+        const secretsMp = secrets.featureImageMp
         const result = await generateFeatureMaterial({
           userPrompt: input.userPrompt,
           proxyUrl: input.proxyUrl,
           sessionToken: token,
+          aspectRatio: (input.aspectRatio || secretsAspect) as never,
+          imageMp: (input.imageMp ?? secretsMp) as never,
           isCancelled: () => cancelledFeatureMaterialRuns.has(input.runId),
           onProgress: (progress) =>
             broadcastFeatureMaterialProgress({

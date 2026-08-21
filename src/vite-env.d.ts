@@ -209,10 +209,16 @@ interface LovemiBridge {
     teamoModel: string
     hasApiKey: boolean
     hasAdminToken: boolean
+    apiKeyMask: string
+    adminTokenMask: string
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
     autoDownloadWatermark: boolean
+    featureAspectRatio: string
+    featureImageMp: number
+    featureAspectOptions: string[]
+    featureMpOptions: number[]
   }>
   createCharStateLoad: () => Promise<{
     ok: boolean
@@ -250,15 +256,23 @@ interface LovemiBridge {
     adminAccountId?: string
     downloadsDir?: string
     autoDownloadWatermark?: boolean
+    featureAspectRatio?: string
+    featureImageMp?: number
   }) => Promise<{
     teamoApiBase: string
     teamoModel: string
     hasApiKey: boolean
     hasAdminToken: boolean
+    apiKeyMask: string
+    adminTokenMask: string
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
     autoDownloadWatermark: boolean
+    featureAspectRatio: string
+    featureImageMp: number
+    featureAspectOptions: string[]
+    featureMpOptions: number[]
   }>
   createCharPickDownloadsDir: () => Promise<{
     ok: boolean
@@ -266,10 +280,16 @@ interface LovemiBridge {
     teamoModel: string
     hasApiKey: boolean
     hasAdminToken: boolean
+    apiKeyMask: string
+    adminTokenMask: string
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
     autoDownloadWatermark: boolean
+    featureAspectRatio: string
+    featureImageMp: number
+    featureAspectOptions: string[]
+    featureMpOptions: number[]
     defaultDownloadsDir: string
   }>
   createCharAnalyze: (input: {
@@ -531,6 +551,8 @@ interface LovemiBridge {
     userPrompt: string
     proxyUrl?: string
     sessionToken?: string
+    aspectRatio?: string
+    imageMp?: number
   }) => Promise<{
     ok: boolean
     error?: string
@@ -544,11 +566,15 @@ interface LovemiBridge {
     jobId?: string
     assetId?: string
     cdnUrl?: string
-      cacheUrl?: string
-      localPath?: string
-      twitterPath?: string
-      watermarkApplied?: boolean
-    }>
+    cacheUrl?: string
+    localPath?: string
+    twitterPath?: string
+    watermarkApplied?: boolean
+    aspectRatio?: string
+    imageMp?: number
+    width?: number
+    height?: number
+  }>
   featureMaterialCancel: (input: { runId: string }) => Promise<{
     ok: boolean
     error?: string

@@ -191,6 +191,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const teamoKeyInput = useCreateCharStore((s) => s.teamoKeyInput)
   const hasApiKey = useCreateCharStore((s) => s.hasApiKey)
   const hasAdminToken = useCreateCharStore((s) => s.hasAdminToken)
+  const apiKeyMask = useCreateCharStore((s) => s.apiKeyMask)
+  const adminTokenMask = useCreateCharStore((s) => s.adminTokenMask)
   const draft = useCreateCharStore((s) => s.slots[s.activeSlot])
   const previewUrl = draft.previewUrl
   const imageBase64 = draft.imageBase64
@@ -879,6 +881,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         teamoModel: cfg.teamoModel || 'gpt-5.4-mini',
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
+        apiKeyMask: cfg.apiKeyMask || '',
+        adminTokenMask: cfg.adminTokenMask || '',
         downloadsDir: cfg.downloadsDir || '',
         autoDownloadWatermark: cfg.autoDownloadWatermark !== false,
       })
@@ -1094,6 +1098,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       patch({
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
+        apiKeyMask: cfg.apiKeyMask || '',
+        adminTokenMask: cfg.adminTokenMask || '',
         downloadsDir: cfg.downloadsDir || '',
         autoDownloadWatermark: cfg.autoDownloadWatermark !== false,
         teamoKeyInput: '',
@@ -1101,7 +1107,9 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       })
       setToast(
         cfg.hasAdminToken
-          ? '配置已保存（管理员 Bearer 已加密写入本机）'
+          ? `配置已自动保存 · Bearer ${cfg.adminTokenMask || '****'}${
+              cfg.hasApiKey ? ` · API ${cfg.apiKeyMask || '****'}` : ''
+            }`
           : '中转站已保存 · 请再填写管理员 Bearer',
       )
     }
@@ -2091,15 +2099,24 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         <div className="settings-card-head">管理员 Bearer & 中转站（五槽共用）</div>
         <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10 }}>
           <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            管理员 Bearer {hasAdminToken ? '（已保存）' : ''}
+            管理员 Bearer{' '}
+            {hasAdminToken ? `（已保存 ${adminTokenMask || '****'}）` : ''}
             <input
               className="field"
               style={{ minWidth: 280 }}
               type="password"
               autoComplete="off"
-              placeholder={hasAdminToken ? '留空则沿用已保存 · 可粘贴 Bearer xxx' : '粘贴自己账号的 Bearer'}
+              placeholder={
+                hasAdminToken
+                  ? `已保存 ${adminTokenMask || '****'} · 可粘贴替换`
+                  : '粘贴自己账号的 Bearer'
+              }
               value={adminTokenInput}
               onChange={(e) => patch({ adminTokenInput: e.target.value })}
+              onBlur={() => {
+                if (!adminTokenInput.trim()) return
+                void saveRelay()
+              }}
             />
           </label>
           <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -2121,14 +2138,20 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             />
           </label>
           <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            API Key {hasApiKey ? '（已保存）' : ''}
+            API Key {hasApiKey ? `（已保存 ${apiKeyMask || '****'}）` : ''}
             <input
               className="field"
               style={{ width: 220 }}
               type="password"
-              placeholder={hasApiKey ? '留空则沿用已保存' : 'sk-…'}
+              placeholder={
+                hasApiKey ? `已保存 ${apiKeyMask || '****'} · 可粘贴替换` : 'sk-…'
+              }
               value={teamoKeyInput}
               onChange={(e) => patch({ teamoKeyInput: e.target.value })}
+              onBlur={() => {
+                if (!teamoKeyInput.trim()) return
+                void saveRelay()
+              }}
             />
           </label>
           <label className="chip" style={{ cursor: 'pointer' }}>
@@ -2190,9 +2213,12 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           </label>
         </div>
         <div className="settings-hint" style={{ marginTop: 8 }}>
-          创建归属：{hasAdminToken ? '本机加密保存的管理员 Bearer' : '尚未保存管理员 Bearer'}
+          创建归属：
+          {hasAdminToken
+            ? `本机已保存 Bearer ${adminTokenMask || '****'}`
+            : '尚未保存管理员 Bearer'}
           {' · '}
-          {hasApiKey ? 'API Key OK' : '请填写 API Key'}
+          {hasApiKey ? `API Key ${apiKeyMask || '****'}` : '请填写 API Key'}
           。
           {autoDownloadWatermark
             ? '立绘/视频会写入「推特资源」并敲粉色水印。'

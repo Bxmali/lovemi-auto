@@ -229,10 +229,16 @@ contextBridge.exposeInMainWorld('lovemi', {
       teamoModel: string
       hasApiKey: boolean
       hasAdminToken: boolean
+      apiKeyMask: string
+      adminTokenMask: string
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
       autoDownloadWatermark: boolean
+      featureAspectRatio: string
+      featureImageMp: number
+      featureAspectOptions: string[]
+      featureMpOptions: number[]
     }>,
   createCharStateLoad: () =>
     ipcRenderer.invoke('createChar:stateLoad') as Promise<{
@@ -277,16 +283,24 @@ contextBridge.exposeInMainWorld('lovemi', {
     adminAccountId?: string
     downloadsDir?: string
     autoDownloadWatermark?: boolean
+    featureAspectRatio?: string
+    featureImageMp?: number
   }) =>
     ipcRenderer.invoke('createChar:saveConfig', input) as Promise<{
       teamoApiBase: string
       teamoModel: string
       hasApiKey: boolean
       hasAdminToken: boolean
+      apiKeyMask: string
+      adminTokenMask: string
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
       autoDownloadWatermark: boolean
+      featureAspectRatio: string
+      featureImageMp: number
+      featureAspectOptions: string[]
+      featureMpOptions: number[]
     }>,
   createCharPickDownloadsDir: () =>
     ipcRenderer.invoke('createChar:pickDownloadsDir') as Promise<{
@@ -295,10 +309,16 @@ contextBridge.exposeInMainWorld('lovemi', {
       teamoModel: string
       hasApiKey: boolean
       hasAdminToken: boolean
+      apiKeyMask: string
+      adminTokenMask: string
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
       autoDownloadWatermark: boolean
+      featureAspectRatio: string
+      featureImageMp: number
+      featureAspectOptions: string[]
+      featureMpOptions: number[]
       defaultDownloadsDir: string
     }>,
   createCharAnalyze: (input: {
@@ -603,6 +623,8 @@ contextBridge.exposeInMainWorld('lovemi', {
     userPrompt: string
     proxyUrl?: string
     sessionToken?: string
+    aspectRatio?: string
+    imageMp?: number
   }) =>
     ipcRenderer.invoke('featureMaterial:enqueue', input) as Promise<{
       ok: boolean
@@ -620,6 +642,11 @@ contextBridge.exposeInMainWorld('lovemi', {
       cacheUrl?: string
       localPath?: string
       twitterPath?: string
+      watermarkApplied?: boolean
+      aspectRatio?: string
+      imageMp?: number
+      width?: number
+      height?: number
     }>,
   featureMaterialCancel: (input: { runId: string }) =>
     ipcRenderer.invoke('featureMaterial:cancel', input) as Promise<{

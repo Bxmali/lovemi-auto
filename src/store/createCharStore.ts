@@ -72,6 +72,8 @@ type SharedFields = {
   teamoKeyInput: string
   hasApiKey: boolean
   hasAdminToken: boolean
+  apiKeyMask: string
+  adminTokenMask: string
   /** 是否自动导出含水印推特资源（默认开） */
   autoDownloadWatermark: boolean
 }
@@ -138,6 +140,8 @@ const SHARED_KEYS = new Set([
   'teamoKeyInput',
   'hasApiKey',
   'hasAdminToken',
+  'apiKeyMask',
+  'adminTokenMask',
   'autoDownloadWatermark',
 ])
 
@@ -515,6 +519,8 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
   teamoKeyInput: '',
   hasApiKey: false,
   hasAdminToken: false,
+  apiKeyMask: '',
+  adminTokenMask: '',
   autoDownloadWatermark: true,
   activeSlot: 1,
   slots: emptySlots(),
