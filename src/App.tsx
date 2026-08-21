@@ -10,7 +10,7 @@ import { CaptionGenPage } from './pages/CaptionGenPage'
 import { FeatureMaterialPage } from './pages/FeatureMaterialPage'
 import { useEmailStore } from './store/emailStore'
 import type { EmailAccount } from './types/email'
-import { runEnterShell } from './motion/timelines'
+import { runEnterShell, runNavSpotlight, pauseNavSpotlight } from './motion/timelines'
 import { probeIdleAccounts } from './services/autoProbe'
 import { registerAllUnregisteredReady } from './services/lovemiRegister'
 import { reloadAccountsFromDisk } from './services/reloadAccounts'
@@ -30,13 +30,13 @@ type NavId =
   | 'tasks'
   | 'settings'
 
-const NAV: { id: NavId; label: string; ready: boolean }[] = [
+const NAV: { id: NavId; label: string; ready: boolean; spotlight?: boolean }[] = [
   { id: 'email', label: '邮箱管理', ready: true },
   { id: 'lovemi', label: 'Lovemi账号管理', ready: true },
   { id: 'console', label: '控制台', ready: true },
-  { id: 'createChar', label: '创建角色', ready: true },
-  { id: 'featureMaterial', label: '创建特色素材', ready: true },
-  { id: 'captionGen', label: '文案生成', ready: true },
+  { id: 'createChar', label: '创建角色', ready: true, spotlight: true },
+  { id: 'featureMaterial', label: '创建特色素材', ready: true, spotlight: true },
+  { id: 'captionGen', label: '文案生成', ready: true, spotlight: true },
   { id: 'copy', label: '文案库', ready: true },
   { id: 'security', label: '安全日志', ready: true },
   { id: 'tasks', label: '任务中心', ready: false },
@@ -45,6 +45,7 @@ const NAV: { id: NavId; label: string; ready: boolean }[] = [
 
 export default function App() {
   const rootRef = useRef<HTMLDivElement>(null)
+  const navRef = useRef<HTMLElement>(null)
   const [nav, setNav] = useState<NavId>('email')
   const [appVersion, setAppVersion] = useState('0.0.0')
   const replaceAccounts = useEmailStore((s) => s.replaceAccounts)
@@ -67,6 +68,30 @@ export default function App() {
       .then((version) => setAppVersion(version || '0.0.0'))
       .catch(() => setAppVersion('0.0.0'))
   }, [])
+
+  useEffect(() => {
+    const navRoot = navRef.current
+    if (!navRoot) return
+    const buttons = Array.from(
+      navRoot.querySelectorAll<HTMLElement>('[data-nav-spotlight="1"]'),
+    )
+    runNavSpotlight(buttons)
+    return () => {
+      buttons.forEach((el) => pauseNavSpotlight(el, true))
+    }
+  }, [])
+
+  useEffect(() => {
+    const navRoot = navRef.current
+    if (!navRoot) return
+    const buttons = Array.from(
+      navRoot.querySelectorAll<HTMLElement>('[data-nav-spotlight="1"]'),
+    )
+    buttons.forEach((el) => {
+      const id = el.dataset.navId as NavId | undefined
+      pauseNavSpotlight(el, id === nav)
+    })
+  }, [nav])
 
   useEffect(() => {
     let cancelled = false
@@ -219,16 +244,22 @@ export default function App() {
           </div>
           <div className="brand-sub">专属自动化平台</div>
         </div>
-        <nav className="nav">
+        <nav className="nav" ref={navRef}>
           {NAV.map((item) => (
             <button
               key={item.id}
               type="button"
-              className={`nav-item${nav === item.id ? ' active' : ''}${item.ready ? '' : ' placeholder'}`}
+              data-nav-id={item.id}
+              data-nav-spotlight={item.spotlight ? '1' : undefined}
+              className={`nav-item${nav === item.id ? ' active' : ''}${item.ready ? '' : ' placeholder'}${
+                item.spotlight ? ' nav-item-spotlight' : ''
+              }`}
               disabled={!item.ready}
               onClick={() => setNav(item.id)}
             >
-              {item.label}
+              {item.spotlight ? <span className="nav-spotlight-glow" aria-hidden /> : null}
+              <span className="nav-item-label">{item.label}</span>
+              {item.spotlight ? <span className="nav-spotlight-badge">点我</span> : null}
               {!item.ready ? ' · 即将推出' : ''}
             </button>
           ))}

@@ -59,3 +59,87 @@ export function pulseCodeReveal(el: HTMLElement) {
     { boxShadow: '0 0 28px rgba(228,90,154,0.35)', duration: 0.35, yoyo: true, repeat: 1 },
   )
 }
+
+const spotlightTls = new WeakMap<HTMLElement, gsap.core.Timeline[]>()
+
+/** 侧栏「可点功能」持续 GSAP 高亮，提醒用户点击 */
+export function runNavSpotlight(buttons: HTMLElement[]) {
+  for (const el of buttons) {
+    spotlightTls.get(el)?.forEach((tl) => tl.kill())
+    spotlightTls.delete(el)
+  }
+  if (prefersReducedMotion() || !buttons.length) return
+
+  gsap.fromTo(
+    buttons,
+    { opacity: 0.55, x: -10, scale: 0.96 },
+    {
+      opacity: 1,
+      x: 0,
+      scale: 1,
+      duration: 0.55,
+      stagger: 0.12,
+      ease: 'back.out(1.7)',
+      clearProps: 'opacity,x,scale',
+    },
+  )
+
+  buttons.forEach((el, index) => {
+    const glow = el.querySelector('.nav-spotlight-glow') as HTMLElement | null
+    const badge = el.querySelector('.nav-spotlight-badge') as HTMLElement | null
+    const tls: gsap.core.Timeline[] = []
+
+    const pulse = gsap.timeline({
+      repeat: -1,
+      yoyo: true,
+      defaults: { ease: 'sine.inOut' },
+      delay: index * 0.18,
+    })
+    pulse
+      .to(el, {
+        boxShadow: '0 0 0 1px rgba(255,170,210,0.55), 0 0 22px rgba(228,90,154,0.45)',
+        borderColor: 'rgba(255,170,210,0.65)',
+        duration: 1.15,
+      })
+      .to(el, {
+        boxShadow: '0 0 0 1px rgba(228,90,154,0.28), 0 0 10px rgba(228,90,154,0.18)',
+        borderColor: 'rgba(228,90,154,0.4)',
+        duration: 1.15,
+      })
+    tls.push(pulse)
+
+    if (glow) {
+      const shimmer = gsap.timeline({ repeat: -1, defaults: { ease: 'none' }, delay: index * 0.2 })
+      shimmer.fromTo(
+        glow,
+        { xPercent: -120, opacity: 0 },
+        { xPercent: 120, opacity: 0.9, duration: 1.8, repeatDelay: 1.6 },
+      )
+      tls.push(shimmer)
+    }
+
+    if (badge) {
+      const bob = gsap.timeline({ repeat: -1, yoyo: true, defaults: { ease: 'sine.inOut' } })
+      bob.fromTo(badge, { y: 0, scale: 1 }, { y: -2, scale: 1.06, duration: 0.7 })
+      tls.push(bob)
+    }
+
+    spotlightTls.set(el, tls)
+  })
+}
+
+export function pauseNavSpotlight(el: HTMLElement | null, paused: boolean) {
+  if (!el) return
+  const tls = spotlightTls.get(el)
+  if (!tls) return
+  tls.forEach((tl) => {
+    if (paused) tl.pause(0)
+    else tl.play()
+  })
+  if (paused) {
+    gsap.set(el, {
+      boxShadow: '0 0 0 1px rgba(228,90,154,0.35), 0 0 12px rgba(228,90,154,0.2)',
+      borderColor: 'rgba(228,90,154,0.45)',
+    })
+  }
+}
