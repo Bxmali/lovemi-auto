@@ -77,6 +77,12 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
 const ANALYZE_SYSTEM = `You are a senior character TD for Lovemi.ai (adult products only).
 Look at the reference image and output ONE raw JSON object only. No markdown fences. No commentary.
 
+LENGTH BUDGET（分字段，别一刀切）:
+- personality_tags: 8–12 条萌系性格短语（每条 **50–80**）+ 「对话风格:Chloe」+ 「职业:…」+ **恰好 5 条「性癖:…」**（每条 **50–80**）。← 给人设/对话用，可写细
+- tag_items / occupation_tags / ancestry_tags / style_tags / relationship_tags: **保持短**（官网风格，几字到二十来字），禁止硬扩。
+- appearance_tags: **短但密**（单条建议 **20–72 字**，硬上限 80；禁止灌水凑字）。用**多条**拆细节，目标约 **18–26 条**。必含：背景、姿势(含手)、表情、**心情**、服装(上下装品类)、皮肤、脚(有则写)、配饰。尽量再补：发色/瞳色/肤色(#RRGGBB)、体型、光影。禁止「立绘提示词:」。
+- portrait_prompt: **仅本工具本地草稿**（320–580 字），创建时 **不会** 发给 Lovemi；生图只吃短 appearance_tags + 服务端 prompt_enhancement。
+
 Schema (required keys):
 {
   "creation_source": "blank",
@@ -87,66 +93,77 @@ Schema (required keys):
   "agent_prompt_settings": {"language":"zh-CN"|"en-US","voice_style":"casual","voice_profile_key":"builtin_eve"},
   "ancestry_tags": ["欧洲裔"|"东亚裔"|...],
   "appearance_tags": [
-    "发型:必须超细（刘海形状/遮眼侧/层次/蓬松度/碎发/长度落点/有无扎发；禁止擅自加丸子头或改发型）",
-    "发质:卷直纹理光泽蓬松凌乱度",
-    "五官:脸型、眉形、眼型、鼻唇、面部辨识点",
-    "妆容:眼妆、腮红、唇色与质感",
-    "体型:...",
-    "胸型:...",
-    "臀型:...",
-    "肤色:#RRGGBB",
-    "瞳色:#RRGGBB",
+    "发型:具体（刘海/遮眼/层次/蓬松/长度/扎发；禁止擅自改发型）",
+    "发质:卷直纹理光泽凌乱度",
     "发色:#RRGGBB",
-    "朝向:身体与脸相对镜头的左右朝向（观众视角，禁止左右镜像）",
-    "惯用手:持物在左/右手（观众视角，禁止左右互换）",
-    "服装:在参考图服装基础上更性感暴露（深V/高开衩/短下摆/吊带等），材质配色剪裁配件仍复刻参考图，禁止露点",
-    "露肤度:比参考图更暴露但不露点、不透明到乳头",
-    "脚:若参考图出现脚/足必须超细写（见 FOOT LOCK）；无脚则写「画面未出现脚」",
-    "配饰:头饰/耳饰/手套/袜/鞋等（必填，有则写全；无鞋禁止擅自加高跟鞋）",
-    "姿势:身体姿态手势重心朝向（必填，与朝向/惯用手一致；含腿与脚相对镜头位置）",
-    "背景:场景环境景深（必填）",
-    "表情:眼神嘴角情绪（必填）",
-    "气质:一句话气质锁（必填）"
+    "瞳色:#RRGGBB",
+    "肤色:#RRGGBB",
+    "体型:可见体型",
+    "五官:脸型眉眼鼻唇辨识点",
+    "妆容:眼妆腮红唇色",
+    "朝向:身体与脸相对镜头左右（观众视角，禁止镜像）",
+    "惯用手:持物左/右手（观众视角）",
+    "服装:上装+下装品类颜色与参考一致，仅同品类内更暴露，禁止换品类/露点",
+    "露肤度:比参考更暴露但不露点",
+    "脚:有脚则细写朝向/脚掌/袜鞋；无脚写「画面未出现脚」",
+    "配饰:头饰耳饰袜鞋等；无鞋禁止乱加高跟鞋",
+    "姿势:姿态+手势+重心（必须含手部动作，与朝向/惯用手一致）",
+    "背景:床品颜色褶皱+≥2可见小物件（柜/手办/灯/窗帘/绿植等）",
+    "光影:主光方向软硬与冷暖",
+    "表情:眼神嘴角（可见面部动作，勿用空泛心情词代替）",
+    "心情:根据场景姿势灯光与氛围自行推断的内在情绪（必填，见下方规则）",
+    "气质:萌妹娇羞粘人气质锁",
+    "皮肤:毛孔自然纹理少磨皮，禁止塑料脸",
+    "胸型:可见则写",
+    "臀型:可见则写",
+    "体毛:阴毛浓密度（白虎/稀疏/适中/浓密）按参考图年龄气质写"
   ],
   "fantasy_species_tags": [],
   "occupation_tags": ["..."],
-  "personality_tags": ["性格短标签…","对话风格:Chloe","职业:…","性癖:真实生理/性需求，见 SEXUAL KINK RULES"],
+  "personality_tags": ["超可爱…短语","萌妹…","软萌…","甜美…","娇羞…","粘人…","撒娇…","对话风格:Chloe","职业:…","性癖:…×5"],
   "relationship_tags": ["从下方关系池随机选 1 个，不要永远陌生人"],
-  "style_tags": ["写实"],
+  "style_tags": ["写实","写真","皮肤纹理"],
   "supported_lab_apps": ["companion","intimacy_lab","galgame","adult_film_director"],
   "custom_parameter_access_level": "basic",
-  "tag_items": ["short","labels"],
+  "tag_items": ["short","labels","超可爱","萌妹","软萌","东亚","中日韩","可见服饰材质关键词"],
   "tag_selections": [{"kind":"preset","preset_id":"gender.female"},{"kind":"preset","preset_id":"style.realistic"}],
   "ancestry_region": "east_asian"|"western"|"other",
-  "portrait_prompt": "超长中文立绘提示词，见下方规则"
+  "portrait_prompt": "精炼中文立绘提示词 320–580 字，见下方规则"
 }
 
+PERSONALITY RULES:
+- 多写可爱萌系：从 超可爱/萌妹/软萌/甜美/娇羞/粘人/撒娇/依赖感/想被抱抱/可爱到犯规/娇软/娇滴滴 等里选 **8–12 个**，每个扩成 **50–80 字** 短语（禁止只写两三个字）。
+- MUST include 对话风格:Chloe、职业:…、**exactly 5** 性癖:…（每条 50–80 字）。
+
 SEXUAL KINK RULES（性癖 = 生理/性需求，不是性格）：
-- personality_tags MUST include one tag starting with「性癖:」describing THIS character's adult sexual preferences / turn-ons.
+- personality_tags MUST include **5** tags starting with「性癖:」——具体成人偏好，每条全文 **50–80 字**。
 - 性癖 means what they want sexually (acts, body focus, power dynamics) — NOT everyday personality.
-- FORBIDDEN as 性癖 (these are NOT kinks): 喜欢被夸奖、害羞、粘人、撒娇、温柔、腹黑、傲娇、社恐、怕黑、爱干净、喜欢吃甜食, etc. Everyone likes praise — that is not a 性癖.
-- GOOD examples (pick 1–2 concrete adult ones matching vibe/look; vary across runs):
-  性癖:喜欢给男朋友足交、足底与脚趾挑逗
-  性癖:享受被口到腿软、主动按着对方头
-  性癖:轻微SM、喜欢被绑手腕轻咬锁骨
-  性癖:乳交与被玩弄乳头会很快湿
-  性癖:喜欢骑乘位自己动、边做边看对方失神
-  性癖:高潮后还想被内射、余韵里求再来一次
-  性癖:喜欢在镜子前被后入、盯着自己被干的样子
-  性癖:耳边脏话与命令式语气会立刻兴奋
-- Keep it adult, specific, and character-flavored. Do NOT write vague「性格温柔」as 性癖.
+- FORBIDDEN as 性癖: 喜欢被夸奖、害羞、粘人、撒娇、温柔、腹黑、傲娇、社恐、怕黑、爱干净、喜欢吃甜食 等。
+- GOOD examples (each already in the 50–80 band; pick 5 varied):
+  性癖:喜欢给男朋友足交，用足底与脚趾慢慢磨蹭挑逗，看他忍不住的表情会更兴奋
+  性癖:享受被口到腿软发颤，会主动按着对方的头不让离开，余韵里还想再来
+  性癖:轻微SM，喜欢被绑住手腕后轻咬锁骨和耳垂，越害羞身体越诚实
+  性癖:乳交与被玩弄乳头会很快湿，喜欢被盯着胸部用脏话说出来
+  性癖:喜欢骑乘位自己摇腰，边做边盯着对方失神的脸，控制节奏的感觉上瘾
+  性癖:高潮后还想被内射，余韵里软着声音求再深一点、再来一次
+  性癖:喜欢在镜子前被后入，被迫看着自己潮红的脸和交合处，羞耻感会立刻更湿
+  性癖:耳边脏话和命令式语气会立刻兴奋，越被说骚越想被抱紧用力
+- Keep it adult, specific, and character-flavored.
 
 NAME RULES:
-- display_name: invent a UNIQUE cute **Chinese** girl name (2 **or** 3 汉字，三字也要常有). NEVER reuse 柚子/千夏/陽葵/芽衣/宁宁/瑾萱/葵/琴音 or any name you just used.
-- The app WILL replace display_name from a large unused Chinese pool — still invent varied CN names; never blank; NO digits; avoid JP-only names unless the character is clearly Japanese.
+- East Asian: UNIQUE cute **Chinese** girl name (2 **or** 3 汉字). NEVER reuse 柚子/千夏/陽葵/芽衣/宁宁/瑾萱/葵/琴音.
+- Western / European: UNIQUE **English** name (Latin letters; First or First Last). Never Chinese characters in display_name.
+- The app MAY replace display_name from an unused pool — still invent varied names; never blank; NO digits.
 
 RELATIONSHIP RULES:
 - relationship_tags MUST be exactly ONE string randomly chosen from:
   ["陌生人","青梅竹马","同事","邻居","网友","合租室友","暗恋对象","学长学妹","前同事","偶遇","粉丝","笔友","社团同伴","远房表亲","上下级","客户"]
 - Do NOT always use 陌生人. Vary across runs.
 
-CRITICAL — Lovemi image job mostly reads SHORT appearance_tags, NOT only the long 立绘提示词.
-So appearance_tags MUST lock the reference with concrete Chinese short labels:
+CRITICAL — Lovemi 官网 create 的 appearance_tags 是短结构化标签（发型/体型/三色等），生图靠 prompt_enhancement 扩写。
+不要把长「立绘提示词」塞进 appearance_tags（会被截到约 80 字且易 PROMPT_COMPILATION_FAILED）。
+长中文立绘写在独立字段 portrait_prompt（仅本工具草稿/对照用）。
+So appearance_tags MUST lock the reference with **dense SHORT** Chinese labels (prefer **20–72 chars** each, hard max 80; NEVER pad with filler like「细节写清」). Split facts across many tags instead of one vague line:
 - Never output bare face/hair only.
 - ORIENTATION LOCK (critical): describe left/right from the VIEWER's perspective. If reference holds phone in RIGHT hand, tags must say 右手持手机 — NEVER mirror to left. If body leans / face turns to viewer's right, write that side explicitly. Add tags 朝向:… and 惯用手:…. Forbid 左右镜像 / mirrored pose.
 - HAIR LOCK (critical): 发型 tag must be HIGH DETAIL — bangs shape, which eye covered, layers, volume/messiness, strand fall, whether hair is tied. Do NOT invent a top bun / odango / neat idol cut if the reference is loose messy voluminous hair. Add 发质:… for texture.
@@ -156,35 +173,58 @@ So appearance_tags MUST lock the reference with concrete Chinese short labels:
   - If feet are a FOCAL point in the reference (large in foreground, soles facing camera, between camera and body), write explicitly: 脚部前景占比大、足部是构图重点、低机位突出脚掌/脚心 — NEVER shrink feet to tiny tips at the bottom edge.
   - NEVER invent 高跟鞋 / sandals / boots if reference has no shoes (e.g. only lace tights covering feet). Match 袜 vs 鞋 exactly.
   - If no feet visible at all, 脚:画面未出现脚.
-- 服装 / 配饰 / 姿势 / 背景 / 表情 / 气质 / 脚 are MANDATORY fields (脚 always present as above).
+- CLOTHING IDENTITY LOCK（比「更暴露」更优先）:
+  - 上下装**品类**必须与参考图一致：比基尼就是比基尼上下装，内裤/三角裤就是内裤，连衣裙就是连衣裙。禁止把比基尼下装改成短裙/裤裙/掀开裙摆。
+  - 「更暴露」只能在**同品类内**微调：细带更窄、剪裁更高、贴身更紧、腰腹多露一点；禁止换品类、禁止扯开遮挡导致露点/外阴暴露。
+  - 服装 tag 必须同时写清上装+下装品类与颜色（例：白细带比基尼上衣+同色三角比基尼下装）。
+- BACKGROUND DETAIL LOCK:
+  - 背景禁止只写「卧室/床铺」。必须点出 ≥2 个可见小物件：床品颜色与褶皱、柜内手办/灯带、电视、床上散落衣物等。
+- REALISM / 去 AI 味 LOCK（critical）:
+  - style_tags 必须含：写实、写真、皮肤纹理（可加 少磨皮）。
+  - appearance 加 皮肤:毛孔自然纹理少磨皮，禁止塑料脸。
+  - 禁止二次元大眼磨皮、塑料感皮肤、过度美颜。要像真人 cosplay 摄影。
+- MOOD / 心情 LOCK（critical — 与「表情」分开）:
+  - appearance_tags MUST include 心情:… —— 根据场景、姿势、光线、服装暴露度、是否闭眼、与镜头关系等**自行推断**当下内在情绪。
+  - 写具体可感的心情短语（约 16–40 字），例如：被暖光包裹的慵懒安心、镜头前的微羞期待、独处时的放松放空、被注视时的心跳加速。
+  - FORBIDDEN 空泛单字/两字心情：伤心、开心、难过、快乐、生气、平静、无聊、害羞（单独两字也不行）、可爱、性感。
+  - 心情 ≠ 表情：表情写眼睛嘴巴怎么动；心情写「为什么像这样、此刻心里在酝酿什么」。
+- 服装 / 配饰 / 姿势 / 背景 / 表情 / 心情 / 气质 / 脚 / 皮肤 are MANDATORY.
 - 五官 / 妆容 are MANDATORY and must describe visible, reference-specific details rather than generic beauty words.
-- CLOTHING EXPOSURE: keep the reference outfit identity (colors/style/accessories) but make it mildly MORE revealing / sexy than the photo — deeper cleavage, higher slit, shorter hem, thinner straps, more shoulder/thigh/waist skin, tighter fit, sheer side panels OK. NEVER show nipples / areola / 露点 / fully bare breasts / transparent fabric over nipples / pubic exposure. Add tag 露肤度:….
+- CLOTHING EXPOSURE: keep the reference outfit **identity** (same garment types/colors/accessories) but make it mildly MORE revealing within that identity — deeper cut of same bikini, thinner straps, more waist skin. NEVER nipples / areola / 露点 / fully bare breasts / transparent over nipples / pubic exposure. Add 露肤度:….
 
 REGION RULES:
 - East Asian / 东亚 / 中日韩 (CRITICAL — models love drifting to Western faces):
   - ancestry_region MUST be "east_asian"
   - ancestry_tags MUST include "东亚裔" (and may add 华裔/日系/韩系 if look matches)
-  - appearance_tags MUST repeatedly lock: 人种:东亚中日韩, 五官:东亚脸型, 禁止欧美五官, 禁止高加索面孔, 禁止西方混血跑偏
-  - portrait_prompt MUST open with and keep repeating: 东亚女性/中日韩面孔、东亚五官、不是欧美脸
-  - HARD moe stack (adult 20+): personality_tags + tag_items MUST include many of: 超可爱, 萌妹, 软萌, 甜美, 娇软, 超级娇羞, 粘人, 撒娇, 依赖感, 想被抱抱, 可爱到犯规, 水润大眼, 粉嫩皮肤, 想捏的小脸蛋, 娇滴滴
-  - 气质 tag: 萌妹娇羞粘人东亚感. Expression cute/shy — NOT cold Western model face, NOT deep-set Caucasian eyes, NOT high nose bridge Western sculpt
+  - appearance_tags lock once: 人种:东亚中日韩 + 五官含东亚脸型 + 一条「禁止欧美五官」即可（勿重复刷屏）
+  - portrait_prompt 开头写死东亚中日韩面孔/五官，文中再点一次即可，勿整段反复同义
+  - 气质: 萌妹娇羞粘人东亚感. Expression cute/shy — NOT cold Western model / Caucasian deep-set eyes
   - If reference is East Asian, NEVER output western / european / mixed Caucasian identity
-- Western / 欧美: ancestry_region="western". PERFECT identity lock — photoreal fidelity, no kawaii spam.
+- Western / 欧美:
+  - ancestry_region MUST be "western"
+  - agent_prompt_settings.language MUST be **"en-US"**（不是 zh-CN）
+  - display_name MUST be UNIQUE **English** (First or First Last, Latin letters only, NO digits). e.g. Ava Brooks / Nora Hale
+  - appearance_tags / personality / 性癖 / portrait_prompt 仍可用**中文**写细节；只把 language + 显示名改成英文
+  - PERFECT identity lock — photoreal fidelity；气质偏写实模特，勿刷东亚萌妹模板
+  - ancestry_tags 用「欧洲裔」等；勿写「东亚中日韩」
 
-portrait_prompt RULES (Chinese, for Lovemi 立绘 tag; still write it even though short tags matter more):
-ONE long paragraph 350–750 字. Order of content MUST be:
-1) 若东亚：先写死「东亚中日韩面孔/五官」防跑偏欧美，再写朝向与惯用手（观众视角左右锁死，禁止镜像）+ 构图视角 + 姿势动作
-2) 若参考图有脚：紧接写足部构图（脚掌/脚心朝向、前景占比、袜/鞋、脚趾姿态）——禁止省略脚；脚大就写脚大
-3) 发型发色发质超细节（刘海/遮眼/层次/蓬松凌乱/碎发；禁止擅自改发型）
-4) 完整服装与配饰（材质颜色层次；在参考图基础上更暴露性感，但不露点；鞋袜与参考一致，禁止乱加高跟鞋）
-5) 背景环境与光线
-6) 五官气质表情（东亚：超级可爱娇羞粘人萌妹感 + 明确东亚五官细节）
-7) 写真级真实感 / 拒绝AI塑料感 / 可含身高约值
-Must be locked to THIS reference — do not swap outfit identity, flip left/right, simplify hair, or drop/minimize visible feet.
-Do NOT wrap in「立绘提示词:」prefix (we add that later).
-In clothing description explicitly: 比参考图更暴露但不露点.
-For East Asian: throughout the paragraph keep saying 东亚/中日韩，forbid 欧美脸.
+BODY HAIR / 阴毛 RULES（按图与年龄气质推断，允许白虎）:
+- appearance_tags MUST include 体毛:…，浓密度从：白虎(全剃光滑) / 稀疏 / 适中 / 浓密 中选一个最贴图的。
+- 推断优先：① 参考图耻丘/腿根若能看出有无毛、疏密，按可见写；② 看不出时按年龄气质：刚成年/娃娃脸/幼态成人感 → 稀疏或白虎；年龄感偏成熟（二十中后/脸更成熟）→ 适中或浓密。
+- 白虎完全可以，只要符合图或年龄气质；不要一律写浓密，也不要一律写白虎。
+- portrait_prompt 末尾一句即可，例如：阴毛稀疏贴肤 / 阴毛白虎光滑 / 阴毛适中偏浓量感可见。
 
+portrait_prompt RULES (Chinese, for Lovemi 立绘 tag):
+ONE paragraph 320–580 字. Dense facts, no filler. Order:
+1) 东亚锁（若东亚）+ 朝向/惯用手 + 构图姿势
+2) 有脚则写足部构图；无脚跳过
+3) 发型发质（关键辨识点，勿叠形容词）
+4) 服装：上下装品类颜色与参考一致，仅同品类内更暴露，禁止改成短裙或乱换下装，禁止露点
+5) 背景：床品颜色褶皱 + ≥2 个可见小物件（手办柜灯带/电视/床上织物等）
+6) 五官表情 + 心情（场景推断的内在情绪，禁止空泛「伤心/开心」）+ 气质 + 一句阴毛浓密度（露肤时，按上规则）
+7) 写实摄影锁死：真人 cosplay 照片感，皮肤毛孔与自然阴影可见，少磨皮，禁止 AI 塑料脸/二次元大眼过度磨皮
+Do NOT wrap in「立绘提示词:」prefix.
+Say once: 比参考图更暴露但不露点.
 Adult only. Prefer 写实.`
 
 function ensureTagged(list: string[], prefix: string, fallback: string) {
@@ -196,32 +236,61 @@ function analyzeDetailIssues(payload: Record<string, unknown>, portraitPrompt: s
     ? (payload.appearance_tags as unknown[]).map(String)
     : []
   const issues: string[] = []
+  // appearance 走官网短标签；只要求「有内容」，不要逼到 50+（否则易 PROMPT_COMPILATION_FAILED）
   const required: Array<[string, number]> = [
-    ['发型:', 32],
-    ['发质:', 18],
-    ['五官:', 24],
-    ['妆容:', 18],
-    ['朝向:', 18],
-    ['惯用手:', 14],
-    ['服装:', 38],
-    ['露肤度:', 16],
-    ['脚:', 18],
-    ['配饰:', 24],
-    ['姿势:', 28],
-    ['背景:', 20],
-    ['表情:', 20],
-    ['气质:', 16],
+    ['发型:', 10],
+    ['发质:', 6],
+    ['五官:', 8],
+    ['妆容:', 6],
+    ['朝向:', 6],
+    ['惯用手:', 4],
+    ['服装:', 14],
+    ['露肤度:', 6],
+    ['脚:', 6],
+    ['配饰:', 6],
+    ['姿势:', 10],
+    ['背景:', 14],
+    ['表情:', 6],
+    ['心情:', 12],
+    ['气质:', 4],
+    ['皮肤:', 8],
   ]
   for (const [prefix, minLength] of required) {
     const hit = tags.find((tag) => tag.startsWith(prefix))
     if (!hit) issues.push(`缺少 ${prefix}`)
     else if (hit.length < minLength) issues.push(`${prefix}细节不足`)
   }
+  const mood = tags.find((t) => t.startsWith('心情:')) || ''
+  if (mood && /^(心情:)?\s*(伤心|开心|难过|快乐|生气|平静|无聊|害羞|可爱|性感)\s*$/.test(mood.replace(/\s/g, ''))) {
+    issues.push('心情过于空泛，需按场景推断具体情绪')
+  }
+  if (mood && /伤心|难过|痛苦|哭泣/.test(mood) && !/慵懒|安心|期待|放空|微羞|心动|沉浸|放松/.test(mood)) {
+    // 允许复杂描述里带负面词，但单独「伤心」系空泛要拦；上面已拦纯两字。此处仅拦极短伤心句
+    if (mood.length < 18) issues.push('心情不要只写伤心类空词，按场景写具体')
+  }
+  const cloth = tags.find((t) => t.startsWith('服装:')) || ''
+  if (cloth && /短裙|裤裙|迷你裙/.test(cloth) && /比基尼|泳装/.test(tags.join('｜'))) {
+    issues.push('服装品类冲突：参考像比基尼却写成短裙')
+  }
+  if (cloth && !/(上|下|比基尼|裙|裤|内衣|制服|连衣裙|连体)/.test(cloth)) {
+    issues.push('服装未写清上下装品类')
+  }
+  const bg = tags.find((t) => t.startsWith('背景:')) || ''
+  if (bg && !/(手办|柜|灯|电视|床|褶皱|墙|枕|毯|窗帘)/.test(bg)) {
+    issues.push('背景缺少可见小物件')
+  }
+  const style = Array.isArray(payload.style_tags) ? (payload.style_tags as unknown[]).map(String).join('｜') : ''
+  if (!/写实|写真|皮肤/.test(style) && !tags.some((t) => t.startsWith('皮肤:'))) {
+    issues.push('缺少写实/皮肤纹理锁')
+  }
   const genericCount = tags.filter((tag) => /复刻参考图|与参考图一致|保持原样/.test(tag)).length
   if (genericCount >= 3) issues.push('泛化描述过多，必须写出实际可见细节')
-  if (portraitPrompt.length < 280) issues.push('portrait_prompt 少于 280 字')
-  const detailedTags = tags.filter((tag) => tag.length >= 28).length
-  if (detailedTags < 7) issues.push('长细节标签不足 7 条')
+  if (portraitPrompt.length < 250) issues.push('portrait_prompt 少于 250 字')
+  if (portraitPrompt && !/毛孔|皮肤纹理|少磨皮|写实摄影|写真/.test(portraitPrompt)) {
+    issues.push('portrait_prompt 缺少写实皮肤锁')
+  }
+  const detailedTags = tags.filter((tag) => tag.length >= 16 && tag.length <= 80).length
+  if (detailedTags < 6) issues.push('可用外观标签不足 6 条')
   return issues
 }
 
@@ -257,33 +326,90 @@ function pushUnique(list: string[], items: string[]) {
   }
 }
 
-/** Lovemi 生图更吃短 tag：补齐服装/姿势/背景/萌系气质 */
+/** Lovemi 生图更吃短 tag：补齐服装/姿势/背景/萌系气质（外观保持短，勿凑 50 字） */
 function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: boolean) {
   const appearance = Array.isArray(payload.appearance_tags)
     ? (payload.appearance_tags as unknown[]).map(String)
     : []
-  ensureTagged(appearance, '服装:', '复刻参考图服装但更性感暴露（深V/开衩/短下摆），禁止露点')
-  ensureTagged(appearance, '露肤度:', '比参考图更暴露但不露点')
-  ensureTagged(appearance, '配饰:', '复刻参考图头饰配饰手套袜鞋，无鞋禁止加高跟鞋')
-  ensureTagged(appearance, '姿势:', '复刻参考图身体姿态与手势，禁止左右镜像')
-  ensureTagged(appearance, '朝向:', '观众视角左右与参考图一致，禁止镜像')
-  ensureTagged(appearance, '惯用手:', '持物左右手与参考图一致，禁止左右互换')
-  ensureTagged(appearance, '发型:', '复刻参考图刘海层次蓬松碎发，禁止擅自改扎发')
-  ensureTagged(appearance, '发质:', '复刻参考图发丝纹理与凌乱蓬松度')
-  ensureTagged(appearance, '五官:', isEast ? '东亚脸型、眼型、鼻唇与面部辨识点按参考图锁定' : '脸型、眼型、鼻唇与面部辨识点按参考图锁定')
-  ensureTagged(appearance, '妆容:', '按参考图锁定眼妆、腮红、唇色与质感')
-  ensureTagged(appearance, '背景:', '复刻参考图场景与景深')
-  ensureTagged(appearance, '表情:', isEast ? '自然对视，轻微羞涩' : '复刻参考图表情')
-  ensureTagged(appearance, '气质:', isEast ? '生活化、亲密感、不过度摆拍' : '完美复刻参考气质')
-  ensureTagged(appearance, '脚:', '复刻参考图足部：朝向/脚掌脚心/前景占比/袜或鞋；有脚必须写细，禁止缩小脚或乱加高跟鞋')
+  ensureTagged(appearance, '服装:', '上下装品类与参考一致，仅同品类内更暴露，禁止换品类露点')
+  ensureTagged(appearance, '露肤度:', '比参考更暴露但不露点')
+  ensureTagged(appearance, '配饰:', '复刻头饰配饰手套袜鞋，无鞋禁止加高跟鞋')
+  ensureTagged(appearance, '姿势:', '复刻站坐姿与手势重心，禁止左右镜像')
+  ensureTagged(appearance, '朝向:', '观众视角左右与参考一致，禁止镜像')
+  ensureTagged(appearance, '惯用手:', '持物左右手与参考一致')
+  ensureTagged(appearance, '发型:', '复刻刘海层次蓬松碎发，禁止擅自改扎发')
+  ensureTagged(appearance, '发质:', '复刻发丝纹理与凌乱蓬松度')
+  ensureTagged(
+    appearance,
+    '五官:',
+    isEast ? '东亚脸型眼型鼻唇按参考锁定' : '脸型眼型鼻唇按参考锁定',
+  )
+  ensureTagged(appearance, '妆容:', '按参考锁定眼妆腮红唇色')
+  ensureTagged(appearance, '背景:', '床品颜色褶皱+柜/手办/灯等可见小物件')
+  ensureTagged(appearance, '皮肤:', '毛孔自然纹理少磨皮，禁止塑料脸')
+  ensureTagged(
+    appearance,
+    '表情:',
+    isEast ? '复刻眼神嘴角，东亚萌妹娇羞或勾人直视' : '复刻眼神嘴角与情绪',
+  )
+  ensureTagged(
+    appearance,
+    '心情:',
+    '按场景姿势与光线自行推断的当下情绪，写具体可感，禁止空泛伤心开心',
+  )
+  ensureTagged(
+    appearance,
+    '气质:',
+    isEast ? '超级可爱软萌娇羞粘人萌妹感' : '完美复刻参考气质',
+  )
+  // 极短条目补一点可见细节，但仍 ≤72，绝不灌水凑 50
+  const thicken = (prefix: string, minLen: number, rich: string) => {
+    const i = appearance.findIndex((t) => t.startsWith(prefix))
+    if (i < 0) return
+    if (appearance[i].length < minLen) {
+      appearance[i] = clampAppearanceTagLen(`${prefix}${rich}`, 72)
+    }
+  }
+  thicken('背景:', 18, '床品颜色褶皱，窗帘或柜内手办灯带等可见小物件写清')
+  thicken('表情:', 12, isEast ? '复刻眼神嘴角，萌妹娇羞或勾人直视' : '复刻眼神嘴角与情绪')
+  thicken('心情:', 16, '由场景推断的内在情绪，具体可感，禁止空泛两字心情词')
+  thicken('姿势:', 16, '复刻站坐姿与双手手势重心落点，禁止左右镜像')
+  thicken('服装:', 18, '上下装品类颜色材质与参考一致，仅同品类内更暴露')
+  thicken('皮肤:', 14, '毛孔自然纹理少磨皮，禁止塑料磨皮脸')
+  // 空泛心情纠偏
+  const moodIdx = appearance.findIndex((t) => t.startsWith('心情:'))
+  if (moodIdx >= 0) {
+    const body = appearance[moodIdx].replace(/^心情:/, '').trim()
+    if (
+      !body ||
+      body.length < 10 ||
+      /^(伤心|开心|难过|快乐|生气|平静|无聊|害羞|可爱|性感)$/.test(body)
+    ) {
+      appearance[moodIdx] = clampAppearanceTagLen(
+        '心情:由场景姿势光线推断的当下内在情绪，写具体可感层次，禁止空泛两字心情',
+        72,
+      )
+    }
+  }
+  ensureTagged(appearance, '光影:', '复刻主光方向与冷暖软硬')
+  // 若服装写成短裙但文案里已有比基尼暗示，纠回品类锁（避免「穿着内裤却生成短裙」）
+  const clothIdx = appearance.findIndex((t) => t.startsWith('服装:'))
+  if (clothIdx >= 0 && /短裙|裤裙|迷你裙/.test(appearance[clothIdx])) {
+    appearance[clothIdx] = clampAppearanceTagLen(
+      '服装:上下装品类锁死与参考一致，禁止改成短裙，仅同品类内更暴露不露点',
+      72,
+    )
+  }
+  ensureTagged(appearance, '脚:', '有脚则写朝向/脚掌/袜鞋；无脚写画面未出现脚')
   pushUnique(appearance, [
     '禁止左右镜像',
     '发型细节锁死禁止简化',
     '禁止露点',
     '禁止透明到乳头',
-    '服装比参考图更暴露性感',
+    '服装品类与参考一致禁止乱换',
     '足部细节锁死禁止省略',
     '禁止擅自添加高跟鞋',
+    '禁止AI塑料磨皮脸',
   ])
 
   // 若姿势/配饰已暗示有脚，强化脚部前景，并去掉乱加的鞋类（保留袜）
@@ -294,10 +420,10 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
   if (feetLikely) {
     const footIdx = appearance.findIndex((t) => t.startsWith('脚:'))
     const strongFoot =
-      '脚:参考图足部必须完整保留——脚在画面前景占比大、朝向镜头、脚掌/脚心细节可见时要写明；袜/裸足与参考一致；禁止把脚缩成画面底边小尖；禁止无鞋却加高跟鞋'
+      '脚:足部前景保留，朝向/脚掌脚心/袜或鞋与参考一致，禁止缩脚或乱加高跟鞋'
     if (footIdx >= 0) {
       const cur = appearance[footIdx]
-      if (cur.length < 40 || /未出现/.test(cur) || !/前景|脚掌|脚心|足/.test(cur)) {
+      if (cur.length < 12 || /未出现/.test(cur) || !/前景|脚掌|脚心|足|袜|鞋/.test(cur)) {
         appearance[footIdx] = strongFoot
       }
     } else {
@@ -323,22 +449,12 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
     pushUnique(appearance, [
       '人种:东亚中日韩',
       '五官:东亚脸型小巧精致',
-      '东亚锁:中日韩面孔',
       '禁止欧美五官',
-      '禁止高加索面孔',
-      '禁止西方混血跑偏',
-      '禁止欧美模特脸',
     ])
     ensureTagged(appearance, '人种:', '东亚中日韩')
     ensureTagged(appearance, '五官:', '东亚脸型，不是欧美深邃五官')
   }
-  if (
-    appearance.some((t) => t.startsWith('露肤度:')) &&
-    !appearance.some((t) => t.startsWith('体毛:') || t.includes('阴毛'))
-  ) {
-    // 避免默认“白虎”，在露肤场景加一条短约束，按参考图可见度复刻。
-    appearance.push('体毛:阴毛按参考图可见度自然保留，不做默认全剃')
-  }
+  ensureBodyHairTag(appearance, payload)
   payload.appearance_tags = appearance
 
   // 去重 + 统一长度上限：避免 prompt compiler 因重复/超长 tag 直接失败
@@ -354,9 +470,10 @@ function reinforceVisualAndCuteTags(payload: Record<string, unknown>, isEast: bo
   const items = Array.isArray(payload.tag_items) ? (payload.tag_items as unknown[]).map(String) : []
   if (isEast) pushUnique(items, ['东亚', '中日韩'])
   payload.tag_items = items
+  prunePersonalityAndTagItems(payload)
 
   const style = Array.isArray(payload.style_tags) ? (payload.style_tags as unknown[]).map(String) : []
-  pushUnique(style, ['写实', '写真'])
+  pushUnique(style, ['写实', '写真', '皮肤纹理', '少磨皮'])
   if (isEast) pushUnique(style, ['东亚'])
   payload.style_tags = style
 
@@ -547,6 +664,10 @@ const NAME_POOL_EN = [
   'Ellie', 'Stella', 'Violet', 'Aurora', 'Willow', 'Piper', 'Quinn', 'Remi', 'Skye', 'Tessa',
   'Willa', 'Zara', 'Bella', 'Daisy', 'Freya', 'Grace', 'Holly', 'June', 'Kate', 'Lacey',
   'Maya', 'Noelle', 'Olive', 'Pearl', 'Rosie', 'Sage', 'Tara', 'Uma', 'Vera', 'Wren',
+  'Ava Brooks', 'Nora Hale', 'Mia Quinn', 'Ellie Hart', 'Ivy Cole', 'Luna Hayes',
+  'Ruby Lane', 'Chloe Reed', 'Emma Blake', 'Zoe Parker', 'Aria Wells', 'Sadie Ford',
+  'Hazel Grey', 'Mila Cross', 'Layla West', 'Freya Stone', 'Grace Vale', 'Holly Pierce',
+  'Kate Monroe', 'Vera Shaw', 'Wren Adler', 'Pearl Ashton', 'Daisy Rowan', 'Cora Blake',
 ]
 
 /** 进程内最近用过 + 落盘历史，严禁连抽撞名 */
@@ -714,7 +835,7 @@ const OVERUSED_NAMES = new Set([
 
 /**
  * 可爱女孩名：默认中文大词库抽**未用过**的；用户 hint 指定则尊重。
- * 不信任模型返回名（极易撞车）。
+ * 不信任模型返回名（极易撞车）。欧美强制英文名。
  */
 function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) {
   const hinted = extractNameFromUserHint(userHint)
@@ -735,6 +856,28 @@ function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) 
   rememberName(name)
 }
 
+/** 东亚 → zh-CN；欧美 → en-US（外观/人设中文提示词可保留） */
+function ensureAgentLanguageForRegion(payload: Record<string, unknown>) {
+  const lang = nameRegionFromPayload(payload)
+  const region = String(payload.ancestry_region || '')
+  const settings =
+    payload.agent_prompt_settings && typeof payload.agent_prompt_settings === 'object'
+      ? ({ ...(payload.agent_prompt_settings as Record<string, unknown>) } as Record<string, unknown>)
+      : {
+          language: 'zh-CN',
+          voice_style: 'casual',
+          voice_profile_key: 'builtin_eve',
+        }
+  if (lang === 'en' || region === 'western') {
+    settings.language = 'en-US'
+    payload.ancestry_region = 'western'
+  } else if (lang === 'zh' || lang === 'jp' || lang === 'kr' || region === 'east_asian') {
+    settings.language = 'zh-CN'
+    if (!region || region === 'other') payload.ancestry_region = 'east_asian'
+  }
+  payload.agent_prompt_settings = settings
+}
+
 function rememberName(name: string) {
   const n = (name || '').trim()
   if (!n) return
@@ -749,18 +892,18 @@ function rememberName(name: string) {
 }
 
 const SEXUAL_KINK_POOL = [
-  '喜欢给男朋友足交、足底脚趾慢慢磨',
-  '享受被口到发颤、会按着对方的头',
-  '轻微SM、喜欢被绑手腕轻咬锁骨',
-  '乳交与被玩弄乳头会很快湿',
-  '喜欢骑乘位自己摇、边看对方失神',
-  '高潮后还想被内射、余韵里求再来',
-  '喜欢镜子前被后入、盯着自己被干',
-  '耳边脏话和命令语气会立刻兴奋',
-  '喜欢被边摸边夸骚、越羞越想要',
-  '迷恋被手指玩到求饶再换成真枪',
-  '喜欢用腿夹住对方腰不让拔出去',
-  '对颈部亲吻和低喘特别敏感',
+  '喜欢给男朋友足交，用足底与脚趾慢慢磨蹭挑逗，看他忍不住的表情会更兴奋发颤',
+  '享受被口到腿软发颤，会主动按着对方的头不让离开，余韵里还想再来一次',
+  '轻微SM，喜欢被绑住手腕后轻咬锁骨和耳垂，越害羞身体越诚实越想要',
+  '乳交与被玩弄乳头会很快湿，喜欢被盯着胸部用脏话说出来并继续揉',
+  '喜欢骑乘位自己摇腰，边做边盯着对方失神的脸，控制节奏的感觉很上瘾',
+  '高潮后还想被内射，余韵里软着声音求再深一点再来一次，腿还在抖',
+  '喜欢在镜子前被后入，被迫看着自己潮红的脸和交合处，羞耻感会立刻更湿',
+  '耳边脏话和命令式语气会立刻兴奋，越被说骚越想被抱紧用力顶进来',
+  '喜欢被边摸边夸骚，越羞越想要，会被摸到求饶还夹紧不让停',
+  '迷恋被手指玩到求饶再换成真枪，扩张到软熟后被填满会立刻更敏感',
+  '喜欢用腿夹住对方腰不让拔出去，贴得很紧磨到自己先喘着高潮',
+  '对颈部亲吻和低喘特别敏感，被舔耳后颈会立刻软腰夹紧求继续',
 ]
 
 function isFakeSexualKink(text: string) {
@@ -776,21 +919,186 @@ function isFakeSexualKink(text: string) {
   )
 }
 
-/** 性癖必须是生理/性需求；把「喜欢被夸奖」这类假性癖换掉 */
+/** 性癖必须是生理/性需求；补足到 5 条，假性癖换掉 */
 function ensureSexualKinks(payload: Record<string, unknown>) {
   const personality = Array.isArray(payload.personality_tags)
     ? (payload.personality_tags as unknown[]).map(String)
     : []
-  const kinkIdx = personality.findIndex((t) => /^性癖[:：]/.test(t))
   const pick = () => SEXUAL_KINK_POOL[Math.floor(Math.random() * SEXUAL_KINK_POOL.length)]
-  if (kinkIdx >= 0) {
-    if (isFakeSexualKink(personality[kinkIdx])) {
-      personality[kinkIdx] = `性癖:${pick()}`
+  const used = new Set<string>()
+  const next: string[] = []
+  for (const t of personality) {
+    if (!/^性癖[:：]/.test(t)) {
+      next.push(t)
+      continue
     }
-  } else {
-    personality.push(`性癖:${pick()}`)
+    let body = t.replace(/^性癖[:：]/, '').trim()
+    if (isFakeSexualKink(t) || !body) body = pick()
+    const key = body.slice(0, 24)
+    if (used.has(key)) continue
+    used.add(key)
+    next.push(ensureTagLengthBand(`性癖:${body}`))
   }
-  payload.personality_tags = personality
+  let guard = 0
+  while (used.size < 5 && guard++ < 40) {
+    const body = pick()
+    const key = body.slice(0, 24)
+    if (used.has(key)) continue
+    used.add(key)
+    next.push(ensureTagLengthBand(`性癖:${body}`))
+  }
+  let kinkCount = 0
+  payload.personality_tags = next.filter((t) => {
+    if (!/^性癖[:：]/.test(t)) return true
+    kinkCount += 1
+    return kinkCount <= 5
+  })
+}
+
+/** 露肤场景强制写清阴毛浓密度；按年龄气质推断，允许白虎/稀疏/浓密 */
+function ensureBodyHairTag(appearance: string[], payload?: Record<string, unknown>) {
+  const idx = appearance.findIndex((t) => t.startsWith('体毛:') || /阴毛/.test(t))
+  const ageMatch = String(payload?.age_statement || '').match(/(\d{2})/)
+  const age = ageMatch ? Number(ageMatch[1]) : NaN
+  // 看不出参考图时：偏年轻 → 稀疏/白虎倾向；偏成熟 → 适中/浓密
+  let fallback: string
+  if (!Number.isNaN(age) && age <= 22) {
+    fallback = '体毛:阴毛稀疏或白虎，刚成年幼态'
+  } else if (!Number.isNaN(age) && age >= 26) {
+    fallback = '体毛:阴毛适中至浓密，偏成熟量感'
+  } else {
+    fallback = '体毛:阴毛浓密度按参考与年龄（白虎/稀疏/适中/浓密）'
+  }
+  if (idx < 0) {
+    if (appearance.some((t) => t.startsWith('露肤度:') || t.startsWith('服装:'))) {
+      appearance.push(fallback)
+    }
+    return
+  }
+  const cur = appearance[idx]
+  if (!/白虎|全剃|稀疏|适中|浓密|浓|密|量感|光滑/.test(cur)) {
+    appearance[idx] = cur.startsWith('体毛:')
+      ? clampAppearanceTagLen(`${cur}，写明白虎/稀疏/适中/浓密`, 72)
+      : fallback
+  }
+}
+
+const MOE_PHRASE_EXPAND: Record<string, string> = {
+  超可爱: '超可爱到犯规，第一眼就想伸手捏脸抱抱，靠近会下意识软声撒娇的萌系气质',
+  萌妹: '典型软萌妹人设，撒娇讨抱、眼神水润依赖感强，被夸一句就会红着脸贴过来',
+  软萌: '软萌到骨头里，说话轻声细气，靠近就想被哄，不开心时也会软软地求抱抱',
+  甜美: '甜美得像刚做好的点心，笑起来软乎乎勾人，语气黏糊得让人想一直哄着',
+  娇羞: '超级娇羞，被盯着看会红耳尖却舍不得躲开，越害羞越想被轻轻抱紧安慰',
+  粘人: '粘人精本精，喜欢贴着对方不撒手求关注，离开一小会儿也要软声喊回来',
+  撒娇: '爱撒娇，尾音黏糊，一不开心就想被抱紧哄，被摸头时会小声哼着更软',
+  依赖感: '依赖感很重，喜欢被牵着手腕带着走，遇到事会先贴过来把脸埋进胸口',
+  想被抱抱: '总想被从身后抱住，脸埋进对方胸口撒娇，被圈住腰时会安心地软下来',
+  可爱到犯规: '可爱到犯规，连生气都像在撒娇卖萌，嘟嘴片刻又会黏过来求和好抱抱',
+  娇软: '娇软无力感，被轻轻一抱就会软在怀里，说话也软软的，越哄越依赖',
+  娇滴滴: '娇滴滴的声线与神态，问一句答一句都软软的，被盯久了会羞着躲开又偷看',
+  水润大眼: '水润大眼直勾勾看人，眨一下就显得更萌，被夸漂亮时会害羞却舍不得移开',
+  粉嫩皮肤: '粉嫩细腻的皮肤质感，靠近能感到软乎温度，被轻轻碰触就会微微缩一下',
+  想捏的小脸蛋: '小脸蛋软软的，让人想轻轻捏一下又怕弄疼，被摸脸颊时会娇羞地贴过来',
+}
+
+/**
+ * personality / tag_items：性格与性癖可写细（50–80）；其余标签保持官网短词。
+ */
+function prunePersonalityAndTagItems(payload: Record<string, unknown>) {
+  const keepMeta = (t: string) => /^性癖[:：]|^对话风格[:：]|^职业[:：]/.test(t)
+  const personality = Array.isArray(payload.personality_tags)
+    ? (payload.personality_tags as unknown[]).map(String)
+    : []
+  const stripPad = (t: string) =>
+    t
+      .replace(
+        /，?(细节写清禁止敷衍带过|层次语气都要具体可感|保持人设一致不跑偏|禁止擅自改成无关设定|写得更生动一点更贴人|按参考图可见信息锁死|保持写真级真实质感|层次光影与质感都要具体|软萌可爱会撒娇，靠近就想被抱抱哄着)+/g,
+        '',
+      )
+      .replace(/，{2,}/g, '，')
+      .replace(/^，|，$/g, '')
+      .trim()
+  const meta = personality.filter(keepMeta).map((t) => {
+    const clean = stripPad(t)
+    // 对话风格 / 职业：官网是短标签，禁止灌水凑字
+    if (/^对话风格[:：]/.test(clean)) {
+      const style = clean.replace(/^对话风格[:：]/, '').trim() || 'Chloe'
+      return `对话风格:${style}`.slice(0, 40)
+    }
+    if (/^职业[:：]/.test(clean)) {
+      const job = clean.replace(/^职业[:：]/, '').trim() || '学生'
+      return `职业:${job}`.slice(0, 40)
+    }
+    // 性癖：可以 50–80
+    return ensureTagLengthBand(clean)
+  })
+  const flavor = personality
+    .filter((t) => !keepMeta(t))
+    .map((t) => {
+      const key = stripPad(t).replace(/^性格[:：]/, '').trim()
+      const expanded =
+        MOE_PHRASE_EXPAND[key] ||
+        (key.length < MIN_TAG_LEN ? `${key}，软萌可爱会撒娇，靠近就想被抱抱哄着` : key)
+      return ensureTagLengthBand(stripPad(expanded))
+    })
+  const flavorOut = [...flavor]
+  for (const m of Object.values(MOE_PHRASE_EXPAND)) {
+    if (flavorOut.length >= 10) break
+    if (!flavorOut.some((x) => x.slice(0, 4) === m.slice(0, 4))) {
+      flavorOut.push(ensureTagLengthBand(m))
+    }
+  }
+  payload.personality_tags = dedupeExactStrings([...flavorOut.slice(0, 12), ...meta]).slice(0, 20)
+
+  const items = Array.isArray(payload.tag_items) ? (payload.tag_items as unknown[]).map(String) : []
+  const structural = new Set(['short', 'labels'])
+  const struct = items.filter((t) => structural.has(t))
+  // tag_items / 职业人种风格：短检索词，禁止拉到 50
+  const rest = items
+    .filter((t) => !structural.has(t))
+    .map((t) => t.slice(0, 24))
+    .filter(Boolean)
+  if (!rest.some((t) => /东亚|中日韩/.test(t))) rest.unshift('东亚', '中日韩')
+  payload.tag_items = dedupeExactStrings([...struct, ...rest]).slice(0, 14)
+
+  for (const key of ['occupation_tags', 'ancestry_tags', 'style_tags'] as const) {
+    if (!Array.isArray(payload[key])) continue
+    payload[key] = (payload[key] as unknown[])
+      .map(String)
+      .map((t) => t.slice(0, 24))
+      .filter(Boolean)
+  }
+}
+
+/** 读写本地 portrait_prompt（不再写入 appearance_tags「立绘提示词:」） */
+function getPortraitPromptText(payload: Record<string, unknown>): string {
+  if (typeof payload.portrait_prompt === 'string' && payload.portrait_prompt.trim()) {
+    return payload.portrait_prompt.trim()
+  }
+  const appearance = Array.isArray(payload.appearance_tags)
+    ? (payload.appearance_tags as unknown[]).map(String)
+    : []
+  const lihui = appearance.find((t) => t.startsWith('立绘提示词:') || t.startsWith('立绘提示词：'))
+  return lihui ? lihui.replace(/^立绘提示词[:：]/, '').trim() : ''
+}
+
+function setPortraitPromptText(payload: Record<string, unknown>, text: string) {
+  const cleaned = sanitizePortraitPromptForLovemi(text)
+  if (cleaned) payload.portrait_prompt = cleaned
+}
+
+/** 写实去 AI 味：皮肤毛孔 + 摄影感，钉进 portrait_prompt */
+function reinforceRealismPortraitPrompt(payload: Record<string, unknown>) {
+  const lock =
+    '写实锁死，必须像真人cosplay摄影，皮肤毛孔与自然阴影纹理可见，少磨皮，禁止AI塑料脸，禁止二次元大眼过度美颜。'
+  let raw = getPortraitPromptText(payload)
+  if (!raw) return
+  if (!/写实锁死|毛孔|皮肤纹理|少磨皮|塑料脸/.test(raw)) raw = `${lock}${raw}`
+  // 服装品类提醒：若文案已有比基尼却又写短裙，压回品类一致
+  if (/比基尼|泳装/.test(raw) && /短裙|迷你裙/.test(raw)) {
+    raw = raw.replace(/短裙|迷你裙|低腰短裙感下装/g, '同色三角比基尼下装')
+  }
+  setPortraitPromptText(payload, raw)
 }
 
 /** 立绘长提示词：有脚必须钉死足部，禁止省略/缩小/乱加鞋 */
@@ -799,51 +1107,62 @@ function reinforceFootPortraitPrompt(payload: Record<string, unknown>) {
     ? (payload.appearance_tags as unknown[]).map(String)
     : []
   const footTag = appearance.find((t) => t.startsWith('脚:')) || ''
-  if (/未出现脚/.test(footTag)) {
-    payload.appearance_tags = appearance
-    return
-  }
+  if (/未出现脚/.test(footTag)) return
   const feetLikely =
     /脚|足|脚掌|脚心|脚趾|丝袜|裤袜|蕾丝袜|裸足|双腿|大腿|坐/.test(appearance.join('｜')) &&
     !/脚:画面未出现脚/.test(footTag)
-  if (!feetLikely) {
-    payload.appearance_tags = appearance
-    return
-  }
+  if (!feetLikely) return
   const lock =
-    '【足部锁死】参考图中的脚必须作为构图重点完整保留：脚部前景占比、脚掌/脚心朝向镜头、脚趾与袜足细节写清楚；禁止弱化成画面底边小尖；禁止无鞋却添加高跟鞋。'
-  const idx = appearance.findIndex((t) => t.startsWith('立绘提示词:'))
-  if (idx >= 0) {
-    const raw = appearance[idx].replace(/^立绘提示词:/, '')
-    if (!/足部锁死|脚掌|脚心|足部前景/.test(raw)) {
-      appearance[idx] = `立绘提示词:${lock}${raw}`
-    }
-    // 长提示词里若写了高跟鞋但有袜足描述，去掉高跟鞋措辞
-    if (/蕾丝袜|裤袜|丝袜|袜足|裸足/.test(appearance[idx]) && /高跟/.test(appearance[idx])) {
-      appearance[idx] = appearance[idx]
-        .replace(/透明感高跟鞋/g, '袜足无鞋')
-        .replace(/高跟鞋/g, '无鞋')
-    }
+    '足部锁死，参考图中的脚必须作为构图重点完整保留，脚部前景占比、脚掌脚心朝向镜头、脚趾与袜足细节写清楚，禁止弱化成画面底边小尖，禁止无鞋却添加高跟鞋。'
+  let raw = getPortraitPromptText(payload)
+  if (!raw) return
+  if (!/足部锁死|脚掌|脚心|足部前景/.test(raw)) raw = `${lock}${raw}`
+  if (/蕾丝袜|裤袜|丝袜|袜足|裸足/.test(raw) && /高跟/.test(raw)) {
+    raw = raw.replace(/透明感高跟鞋/g, '袜足无鞋').replace(/高跟鞋/g, '无鞋')
   }
-  payload.appearance_tags = appearance
+  setPortraitPromptText(payload, raw)
 }
 
 /** 东亚立绘长提示词再钉死一轮，防止生图跑欧美 */
 function reinforceEastAsianPortraitPrompt(payload: Record<string, unknown>, isEast: boolean) {
   if (!isEast) return
   const lock =
-    '【东亚锁死】必须是东亚中日韩面孔与五官，东亚黑发或参考发色，东亚皮肤质感；禁止欧美脸、禁止高加索深邃五官、禁止西方混血跑偏。'
+    '东亚锁死，必须是东亚中日韩面孔与五官，东亚黑发或参考发色，东亚皮肤质感，禁止欧美脸，禁止高加索深邃五官，禁止西方混血跑偏。'
+  let raw = getPortraitPromptText(payload)
+  if (!raw) return
+  if (!/东亚|中日韩|禁止欧美/.test(raw)) raw = `${lock}${raw}`
+  setPortraitPromptText(payload, raw)
+}
+
+/** 立绘提示词补一句阴毛浓密度（短），与体毛 tag / 年龄气质一致 */
+function reinforceBodyHairInPortraitPrompt(payload: Record<string, unknown>) {
   const appearance = Array.isArray(payload.appearance_tags)
     ? (payload.appearance_tags as unknown[]).map(String)
     : []
-  const idx = appearance.findIndex((t) => t.startsWith('立绘提示词:'))
-  if (idx >= 0) {
-    const raw = appearance[idx].replace(/^立绘提示词:/, '')
-    if (!/东亚|中日韩|禁止欧美/.test(raw)) {
-      appearance[idx] = `立绘提示词:${lock}${raw}`
-    }
+  const hairTag = appearance.find((t) => t.startsWith('体毛:') || /阴毛/.test(t)) || ''
+  let raw = getPortraitPromptText(payload)
+  if (!raw) return
+  if (/阴毛|体毛|耻丘|白虎/.test(raw)) return
+  let clause: string
+  if (/白虎|全剃/.test(hairTag)) {
+    clause = '阴毛白虎光滑、耻丘无可见毛发。'
+  } else if (/稀疏/.test(hairTag)) {
+    clause = '阴毛稀疏、仅浅淡绒毛贴肤。'
+  } else if (/浓密/.test(hairTag)) {
+    clause = '阴毛浓密、耻丘毛发量感明显可见。'
+  } else if (/适中/.test(hairTag)) {
+    clause = '阴毛适中、三角区毛发量感自然可见。'
+  } else {
+    const ageMatch = String(payload.age_statement || '').match(/(\d{2})/)
+    const age = ageMatch ? Number(ageMatch[1]) : 23
+    clause =
+      age <= 22
+        ? '阴毛稀疏或白虎，符合刚成年幼态气质。'
+        : age >= 26
+          ? '阴毛适中至浓密，符合偏成熟气质。'
+          : '阴毛浓密度按参考图年龄气质自然呈现。'
   }
-  payload.appearance_tags = appearance
+  setPortraitPromptText(payload, raw.replace(/([。.!！]?)$/, `，${clause}$1`))
 }
 
 function injectLihuiTag(payload: Record<string, unknown>, portraitPrompt: string) {
@@ -888,16 +1207,27 @@ export async function analyzeReferenceImage(input: {
   const hint = (input.userHint || '').trim()
     const userText = [
       'Return ONLY the JSON object for Lovemi character creation.',
-      'ORIENTATION: lock viewer-left/right — same hand holding props as reference; NO horizontal mirror.',
-      'HAIR: ultra-detailed bangs/layers/volume/messiness; do NOT invent bun or simplify.',
-      'appearance_tags MUST include 朝向/惯用手/发型/发质/服装/露肤度/脚/配饰/姿势/背景/表情/气质.',
-      'portrait_prompt order: 朝向惯用手 → 足部构图(若有脚) → 发型细节 → 服装(更暴露不露点) → 背景 → 五官表情.',
-      'FOOT LOCK: if feet/soles/socks visible, MUST detail 脚前景/脚掌朝向/袜或鞋; NEVER drop feet or invent heels when reference is socked/bare.',
-      'CLOTHING: sexier/more revealing than reference, NEVER nipples/露点.',
-      'If East Asian: HARD lock 东亚中日韩面孔 everywhere — ancestry/tags/portrait_prompt MUST say 东亚 and FORBID 欧美脸; moe 超级娇羞粘人.',
-      'If Western: perfect identity lock, premium realism.',
-      '性癖 MUST be real sexual preference (足交/被口/SM/骑乘等), NEVER「喜欢被夸奖」类性格.',
-      'display_name: UNIQUE cute Chinese 2–3字名 each run; never 柚子/千夏/陽葵/琴音等老面孔；NO digits.',
+      'PUNCTUATION: inside any tag value NEVER use : ： ; ； | (breaks Lovemi compiler). Use Chinese comma ， instead.',
+      'LENGTH: personality moe + 性癖 each 50–80 chars. 对话风格/职业 keep SHORT.',
+      'LENGTH: appearance tags DENSE but safe: each ~20–72 chars (hard max 80), aim 18–26 tags. Split details; no filler pad. Colors = #RRGGBB only.',
+      'LENGTH: occupation/ancestry/style/tag_items stay short keywords.',
+      'tag_items = discovery/search keywords (短发/兔耳/漆皮/东亚…), NOT the long portrait essay.',
+      'LENGTH: portrait_prompt = 320–580 Chinese chars LOCAL ONLY — never sent to Lovemi create/portrait API.',
+      'ORIENTATION: lock viewer-left/right — same hand as reference; NO mirror.',
+      'HAIR: bangs/layers/volume/tie — concrete; do NOT invent bun.',
+      'appearance_tags MUST include 朝向/惯用手/发型/发质/服装(上下装品类)/露肤度/脚/配饰/姿势/背景(小物件)/表情/心情/气质/皮肤/光影/体毛.',
+      'MOOD: 心情 must be scene-inferred inner feeling (e.g. 暖光里的慵懒安心); FORBID bare 伤心/开心/难过/害羞.',
+      'CLOTHING IDENTITY: same garment types as reference (bikini stays bikini); 更暴露 only within type; NEVER rewrite bottoms as 短裙.',
+      'BACKGROUND: bed sheet color/wrinkles + ≥2 props (figurine shelf/LED/TV/cloth on bed).',
+      'REALISM: style_tags 写实+写真+皮肤纹理; 皮肤 tag + portrait_prompt must lock pores/少磨皮, forbid plastic AI face.',
+      '体毛: MUST state 阴毛 as 白虎|稀疏|适中|浓密 from image + age vibe (young → sparse/白虎; mature → denser).',
+      'portrait_prompt order: 朝向惯用手 → 足部(若有) → 发型 → 服装品类锁 → 背景小物件 → 五官表情心情 → 阴毛 → 写实皮肤锁.',
+      'FOOT LOCK: if feet visible, detail 脚; NEVER invent heels when socked/bare.',
+      'CLOTHING: sexier within same type, NEVER 露点.',
+      'If East Asian: language zh-CN; lock 东亚中日韩; Chinese display_name; FORBID 欧美脸.',
+      'If Western/European: language MUST be en-US; English display_name; appearance/personality may stay Chinese; ancestry 欧洲裔; no 东亚锁.',
+      '性癖 = real sexual preference (足交/被口/SM/骑乘等), NEVER「喜欢被夸奖」.',
+      'display_name: East Asian → UNIQUE cute Chinese 2–3字; Western → UNIQUE English name; NO digits.',
       hint ? `\nUser notes (must respect for name/lore/occupation):\n${hint}` : '',
     ]
       .filter(Boolean)
@@ -1028,7 +1358,9 @@ export async function analyzeReferenceImage(input: {
                   '',
                   'QUALITY RETRY: Previous result failed these checks:',
                   ...detailIssues.map((issue) => `- ${issue}`),
-                  'Inspect the image again. Replace generic phrases such as 复刻参考图 with concrete visible colors, materials, shapes, layers, left/right positions and proportions. Return ONLY a complete JSON object.',
+                  'Fix missing/thin tags with concrete visible details (colors, materials, left/right).',
+                  'Keep LENGTH split: personality/性癖 50–80; appearance dense short ~18–26 tags. MUST 心情(scene-inferred, no bare 伤心/开心). CLOTHING identity. BACKGROUND props. REALISM pores. Exactly 5 性癖.',
+                  'Return ONLY a complete JSON object.',
                 ].join('\n'),
               },
               { type: 'image_url', image_url: { url: dataUrl } },
@@ -1091,26 +1423,41 @@ export async function analyzeReferenceImage(input: {
       region === 'east_asian' || /东亚|日|韩|中|华|chinese|korean|japanese|east.?asian/i.test(ancestry)
     reinforceVisualAndCuteTags(payload, isEast)
     ensureDisplayName(payload, input.userHint)
+    ensureAgentLanguageForRegion(payload)
     ensureSexualKinks(payload)
+    prunePersonalityAndTagItems(payload)
 
-    // 无字数限制的立绘提示词 → appearance_tags
-    if (portraitPrompt) injectLihuiTag(payload, portraitPrompt)
+    // 立绘长文只留给 UI（portraitPrompt 返回值）；不要塞进 appearance_tags
+    // （官网 create 的 appearance_tags 是短结构化标签 + prompt_enhancement）
+    if (portraitPrompt) {
+      // 本地草稿 JSON 可带 portrait_prompt 字段供编辑；创建时 sanitizeCreateBody 会删掉
+      payload.portrait_prompt = sanitizePortraitPromptForLovemi(portraitPrompt)
+    }
     reinforceEastAsianPortraitPrompt(payload, isEast)
     reinforceFootPortraitPrompt(payload)
-    // 把容易“模板化/广告词”的风格标签删掉，避免 AI 味
+    reinforceBodyHairInPortraitPrompt(payload)
+    reinforceRealismPortraitPrompt(payload)
+    // 保留写实/写真/皮肤纹理，去掉空泛广告词即可
     if (Array.isArray(payload.style_tags)) {
       const style = payload.style_tags.map(String)
-      payload.style_tags = dedupeExactStrings(style).filter((t) => t !== '写真')
+      payload.style_tags = dedupeExactStrings(style).filter(
+        (t) => !/高级感|棚拍感|电影感|质感拉满/.test(t),
+      )
     }
-    // 兜底：appearance_tags 过长/过多时 Lovemi prompt compiler 可能直接 failed。
+    stripLihuiAppearanceTags(payload)
     pruneAppearanceTags(payload)
 
     appendConsoleLog({
       level: 'info',
       action: 'create_char',
-      message: `分析成功 · ${String(payload.display_name || '?')} · ${secrets.teamoModel}${portraitPrompt ? ' · 已写入立绘提示词tag' : ''}`,
+      message: `分析成功 · ${String(payload.display_name || '?')} · ${secrets.teamoModel}${portraitPrompt ? ' · 立绘长文已留作 portrait_prompt（不进 appearance_tags）' : ''}`,
     })
-    return { ok: true, payload, portraitPrompt: portraitPrompt || undefined, model: secrets.teamoModel }
+    return {
+      ok: true,
+      payload,
+      portraitPrompt: typeof payload.portrait_prompt === 'string' ? payload.portrait_prompt : portraitPrompt || undefined,
+      model: secrets.teamoModel,
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     appendConsoleLog({ level: 'error', action: 'create_char', message: `分析异常：${msg}` })
@@ -1352,24 +1699,33 @@ function isNonRetriablePortraitErrorCode(code: string) {
   return /PROMPT_COMPILATION_FAILED|INVALID_PROMPT|CONTENT_POLICY|SAFETY|MODERATION/i.test(code)
 }
 
+/** Lovemi 按「前缀:内容」拆 tag；正文里的 : ： ； | 等会把编译器拆挂 */
+function stripCompilerUnsafePunctuation(text: string): string {
+  return text
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/[`]/g, '')
+    // 二次分隔符 → 中文逗号，避免被当成新 tag
+    .replace(/[|:：；;]/g, '，')
+    // 方括号/花括号偶发被当 DSL
+    .replace(/[{}[\]【】]/g, '')
+    .replace(/\r\n|\n|\r/g, ' ')
+    .replace(/\s+/g, ' ')
+    // 连续逗号压一下
+    .replace(/，{2,}/g, '，')
+    .replace(/^，|，$/g, '')
+    .trim()
+}
+
 function sanitizePortraitPromptForLovemi(input: string): string {
-  // Lovemi prompt compiler 对某些控制字符/反引号/换行比较敏感：尽量变成单行、可打印字符。
-  // 这里不做“语义删改”，仅做字符清洗与长度截断。
+  // Lovemi prompt compiler：单行可打印 + 去掉会破坏「前缀:内容」解析的标点
   const rewritten = input
-    // 这些是“元评价”风格，容易让画面显得不真实：做等量替换（不新增段落，只替换短语）
+    .replace(/^立绘提示词[:：]/, '')
     .replace(/拒绝AI塑料感/g, '少磨皮')
     .replace(/高级写真棚拍感与生活空间真实感兼具/g, '自然光影，像真实拍摄')
     .replace(/写真棚拍感/g, '自然光影')
     .replace(/比例真实/g, '比例自然')
 
-  return rewritten
-    .replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/[`]/g, '')
-    .replace(/\r\n|\n|\r/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    // Lovemi prompt compiler 对单条 tag 长度可能有硬上限：先压到保守值
-    .slice(0, 850)
+  return stripCompilerUnsafePunctuation(rewritten).slice(0, 760)
 }
 
 function dedupeExactStrings(list: string[]) {
@@ -1384,14 +1740,92 @@ function dedupeExactStrings(list: string[]) {
   return out
 }
 
-// Lovemi prompt compiler 对“总长度/条目”很可能有硬限制。
-// 这里取更保守的上限，宁可少一点细节也先保证编译不失败。
-const MAX_LIHUI_TAG_LEN = 640
-const MAX_OTHER_APPEARANCE_TAG_LEN = 180
-function clampAppearanceTagLen(tag: string) {
+// Lovemi 官网对单条 appearance tag 用 Qt(..., 80) 截断；超长自造「立绘提示词:」不进官方 schema。
+// 性格/性癖可写细；appearance 必须短，强行凑 50+ 易 PROMPT_COMPILATION_FAILED。
+const MIN_TAG_LEN = 51 // 仅 personality / 性癖
+const MAX_TAG_LEN = 79
+const MAX_APPEARANCE_TAG_LEN = 80
+/** 送生图编译器前，外观叙事标签再压短一点更稳 */
+const PREFERRED_APPEARANCE_TAG_LEN = 72
+const MAX_LIHUI_TAG_LEN = 576 // 仅本地/草稿展示用，创建送 Lovemi 前会剥离
+
+const TAG_PAD_PHRASES = [
+  '细节写清禁止敷衍带过',
+  '层次语气都要具体可感',
+  '保持人设一致不跑偏',
+  '禁止擅自改成无关设定',
+  '写得更生动一点更贴人',
+]
+
+/**
+ * 仅用于 personality / 性癖：强制全文落在 (50, 80)。
+ * appearance / 颜色 / 职业短词禁止走这里。
+ */
+function ensureTagLengthBand(tag: string, minLen = MIN_TAG_LEN, maxLen = MAX_TAG_LEN): string {
   if (!tag) return tag
-  if (tag.startsWith('立绘提示词:')) return tag.slice(0, MAX_LIHUI_TAG_LEN)
-  return tag.slice(0, MAX_OTHER_APPEARANCE_TAG_LEN)
+  const m = tag.match(/^([^:：]{1,24})[:：]([\s\S]*)$/)
+  let t = m
+    ? `${m[1].trim()}:${stripCompilerUnsafePunctuation(m[2])}`
+    : stripCompilerUnsafePunctuation(tag)
+  if (!t) return t
+  let i = 0
+  while (t.length < minLen && i < 24) {
+    const pad = TAG_PAD_PHRASES[i % TAG_PAD_PHRASES.length]
+    const candidate = `${t}，${pad}`
+    if (candidate.length <= maxLen) {
+      t = candidate
+      i += 1
+      continue
+    }
+    const room = maxLen - t.length
+    if (room < 2) break
+    t = `${t}${'，细节写清'.slice(0, room)}`.slice(0, maxLen)
+    break
+  }
+  if (t.length > maxLen) t = t.slice(0, maxLen)
+  return t
+}
+
+/** 外观 tag：只清洗 + 截断，绝不灌水凑字；颜色只保留 #RRGGBB */
+function clampAppearanceTagLen(tag: string, maxLen = MAX_APPEARANCE_TAG_LEN) {
+  if (!tag) return tag
+  const m = tag.match(/^([^:：]{1,24})[:：]([\s\S]*)$/)
+  if (!m) {
+    return stripCompilerUnsafePunctuation(tag).slice(0, maxLen)
+  }
+  const prefix = m[1].trim()
+  let body = stripCompilerUnsafePunctuation(m[2])
+  if (prefix === '立绘提示词') {
+    return `立绘提示词:${body}`.slice(0, Math.min(maxLen, MAX_LIHUI_TAG_LEN))
+  }
+  // 官网三色：后面加废话会搞挂编译器
+  if (/^(肤色|瞳色|发色)$/.test(prefix)) {
+    const hex = body.match(/#[0-9A-Fa-f]{6}/)?.[0]
+    if (hex) return `${prefix}:${hex.toUpperCase()}`
+    return `${prefix}:${body}`.slice(0, 16)
+  }
+  // 官网短档：胸型/臀型/体型保持短
+  if (/^(胸型|臀型|体型)$/.test(prefix)) {
+    return `${prefix}:${body}`.slice(0, 24)
+  }
+  // 清掉上次错误策略留下的灌水尾句
+  body = body
+    .replace(/，?(细节写清禁止敷衍带过|层次语气都要具体可感|保持人设一致不跑偏|禁止擅自改成无关设定|写得更生动一点更贴人|按参考图可见信息锁死|保持写真级真实质感|层次光影与质感都要具体)+/g, '')
+    .replace(/，{2,}/g, '，')
+    .replace(/^，|，$/g, '')
+  const softMax =
+    maxLen <= PREFERRED_APPEARANCE_TAG_LEN ? maxLen : Math.min(maxLen, PREFERRED_APPEARANCE_TAG_LEN)
+  // 调用方显式传入更小 maxLen 时尊重；默认走 72 软上限（仍 ≤ 官网 80）
+  const cap = maxLen < MAX_APPEARANCE_TAG_LEN ? maxLen : softMax
+  return `${prefix}:${body}`.slice(0, cap)
+}
+
+/** 创建送 Lovemi 前去掉「立绘提示词:」——官网生图不靠这条，硬塞会 PROMPT_COMPILATION_FAILED */
+function stripLihuiAppearanceTags(payload: Record<string, unknown>) {
+  const appearance = Array.isArray(payload.appearance_tags)
+    ? (payload.appearance_tags as unknown[]).map(String)
+    : []
+  payload.appearance_tags = appearance.filter((t) => !t.startsWith('立绘提示词:') && !t.startsWith('立绘提示词：'))
 }
 
 function pruneAppearanceTags(payload: Record<string, unknown>) {
@@ -1400,7 +1834,7 @@ function pruneAppearanceTags(payload: Record<string, unknown>) {
     : []
   if (!appearance.length) return
 
-  const lihui = appearance.find((t) => t.startsWith('立绘提示词:'))
+  // 官网 Pd() 只有发型/体型/胸臀/三色等短标签；我们保留关键锁，但绝不带立绘长文
   const requiredPrefixes = [
     '发型:',
     '发质:',
@@ -1415,28 +1849,68 @@ function pruneAppearanceTags(payload: Record<string, unknown>) {
     '姿势:',
     '背景:',
     '表情:',
+    '心情:',
     '气质:',
+    '皮肤:',
+    '光影:',
     '体毛:',
+    '肤色:',
+    '瞳色:',
+    '发色:',
+    '体型:',
+    '胸型:',
+    '臀型:',
   ]
-  const lockRe = /(锁死|禁止)/i
-  const eastLockRe = /东亚锁|中日韩面孔|禁止欧美|禁止高加索|禁止西方混血/i
   const keep = (t: string) => {
     if (!t) return false
+    if (t.startsWith('立绘提示词:') || t.startsWith('立绘提示词：')) return false
     if (t.startsWith('人种:')) return true
-    if (t.startsWith('东亚锁:')) return true
-    if (t.startsWith('立绘提示词:')) return true
     if (requiredPrefixes.some((p) => t.startsWith(p))) return true
-    if (lockRe.test(t) || eastLockRe.test(t)) return true
     return false
   }
 
-  const prunedOthers = appearance.filter((t) => t !== lihui && keep(t))
-
-  // 数量也做硬限制，避免“条目数”触发编译器上限。
-  const MAX_OTHERS = 14
-  const others = prunedOthers.slice(0, MAX_OTHERS)
-  const combined = lihui ? [clampAppearanceTagLen(lihui), ...others.map(clampAppearanceTagLen)] : []
-  payload.appearance_tags = dedupeExactStrings(combined)
+  const pruned = appearance.filter(keep)
+  // 优先保住背景/姿势(手势)/表情/心情/服装/皮肤等生图关键项，再补其它
+  const priorityPrefix = [
+    '姿势:',
+    '背景:',
+    '表情:',
+    '心情:',
+    '发型:',
+    '服装:',
+    '皮肤:',
+    '脚:',
+    '配饰:',
+    '光影:',
+    '朝向:',
+    '惯用手:',
+    '五官:',
+    '体毛:',
+    '胸型:',
+    '臀型:',
+    '人种:',
+    '发色:',
+    '瞳色:',
+    '肤色:',
+    '体型:',
+    '妆容:',
+    '发质:',
+    '露肤度:',
+    '气质:',
+  ]
+  const prioritized: string[] = []
+  for (const p of priorityPrefix) {
+    const hit = pruned.find((t) => t.startsWith(p))
+    if (hit && !prioritized.includes(hit)) prioritized.push(hit)
+  }
+  for (const t of pruned) {
+    if (!prioritized.includes(t)) prioritized.push(t)
+  }
+  // 多条拆细节；单条仍 ≤72/80
+  const MAX_TAGS = 26
+  payload.appearance_tags = dedupeExactStrings(
+    prioritized.slice(0, MAX_TAGS).map((t) => clampAppearanceTagLen(t)),
+  )
 }
 
 /** 同时只允许一个角色在等生图，避免三槽并发把 Lovemi 打挂 */
@@ -2466,12 +2940,13 @@ export async function createLovemiCharacter(input: {
   if (!input.sessionToken) return { ok: false, error: '缺少管理员 Bearer' }
   const url = `${LOVEMI}/v1/characters`
   const body = sanitizeCreateBody(input.body || {})
-  // 若 JSON 里改过提示词，确保 tag 同步
+  // 短 appearance_tags 对齐官网；立绘长文不进 appearance_tags（否则易 PROMPT_COMPILATION_FAILED）
+  prunePersonalityAndTagItems(body)
   const appearance = Array.isArray(body.appearance_tags) ? (body.appearance_tags as unknown[]).map(String) : []
-  const hasLihui = appearance.some((t) => t.startsWith('立绘提示词:'))
-  if (!hasLihui && typeof input.body?.portrait_prompt === 'string') {
-    injectLihuiTag(body, String(input.body.portrait_prompt))
-  }
+  ensureBodyHairTag(appearance, body)
+  body.appearance_tags = appearance
+  stripLihuiAppearanceTags(body)
+  pruneAppearanceTags(body)
   const idem = `character-agent:${createHash('sha256')
     .update(`${input.sessionToken}|${JSON.stringify(body)}|${randomUUID()}`)
     .digest('hex')

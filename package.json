@@ -12,7 +12,46 @@
     "typecheck": "tsc -b --pretty false",
     "typecheck:electron": "tsc -p tsconfig.electron.json --pretty false",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "dist:win": "npm run build && electron-builder --win --x64",
+    "dist:mac": "npm run build && electron-builder --mac"
+  },
+  "build": {
+    "appId": "app.lovemi.auto",
+    "productName": "Lovemi Auto",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "electron/watermark_pink.py",
+        "to": "electron/watermark_pink.py"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "mac": {
+      "target": ["dmg"],
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    }
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.12",

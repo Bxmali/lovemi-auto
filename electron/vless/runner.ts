@@ -87,8 +87,33 @@ async function ensureSingBoxBinary(fallbackLocalProxy?: string): Promise<string>
   }
 
   await new Promise<void>((resolve, reject) => {
-    const tarArgs = isWin ? ['-xf', archive, '-C', destRoot] : ['-xzf', archive, '-C', destRoot]
-    const p = spawn('tar', tarArgs, { stdio: 'ignore' })
+    if (isWin) {
+      // Windows: Prefer PowerShell Expand-Archive (tar may miss zip layouts)
+      const ps = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destRoot.replace(/'/g, "''")}' -Force`,
+        ],
+        { stdio: 'ignore', windowsHide: true },
+      )
+      ps.on('error', () => {
+        const tar = spawn('tar', ['-xf', archive, '-C', destRoot], { stdio: 'ignore', windowsHide: true })
+        tar.on('error', reject)
+        tar.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))))
+      })
+      ps.on('exit', (code) => {
+        if (code === 0) resolve()
+        else {
+          const tar = spawn('tar', ['-xf', archive, '-C', destRoot], { stdio: 'ignore', windowsHide: true })
+          tar.on('error', reject)
+          tar.on('exit', (c2) => (c2 === 0 ? resolve() : reject(new Error(`extract exit ${c2}`))))
+        }
+      })
+      return
+    }
+    const p = spawn('tar', ['-xzf', archive, '-C', destRoot], { stdio: 'ignore' })
     p.on('error', reject)
     p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))))
   })
@@ -96,7 +121,7 @@ async function ensureSingBoxBinary(fallbackLocalProxy?: string): Promise<string>
   const bin = path.join(destRoot, folder, process.platform === 'win32' ? 'sing-box.exe' : 'sing-box')
   if (!fs.existsSync(bin)) throw new Error('sing-box 解压后未找到二进制')
   try {
-    fs.chmodSync(bin, 0o755)
+    if (process.platform !== 'win32') fs.chmodSync(bin, 0o755)
   } catch {
     /* ignore */
   }
@@ -201,6 +226,7 @@ export async function startVlessBridge(opts: {
         const spawned = spawn(bin, ['run', '-c', confPath], {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: { ...process.env },
+          windowsHide: true,
         })
         child = spawned
         spawned.on('exit', () => {

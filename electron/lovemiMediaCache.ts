@@ -384,14 +384,46 @@ export async function cacheLovemiCdnMedia(input: {
 
   let twitterPath: string | undefined
   if (input.saveDisplayName && input.downloadsPath) {
-    const copied = await copyToTwitterResource({
-      localPath,
-      displayName: input.saveDisplayName,
-      downloadsPath: input.downloadsPath,
-      kind: input.kind,
-      extOverride: path.extname(localPath) || undefined,
-    })
-    if (copied.ok) twitterPath = copied.destPath
+    // 同一 CDN/角色素材只导出一次推特资源，避免轮询缓存反复落盘 _2/_3
+    const markerPath = path.join(dir, `m-${hash}.twitter.json`)
+    let reused = false
+    if (fs.existsSync(markerPath)) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as { destPath?: string }
+        if (prev.destPath && fs.existsSync(prev.destPath) && fs.statSync(prev.destPath).size > 1000) {
+          twitterPath = prev.destPath
+          reused = true
+          appendConsoleLog({
+            level: 'info',
+            action: 'create_char',
+            message: `推特资源已存在，跳过重复导出 · ${path.basename(prev.destPath)}`,
+          })
+        }
+      } catch {
+        /* ignore bad marker */
+      }
+    }
+    if (!reused) {
+      const copied = await copyToTwitterResource({
+        localPath,
+        displayName: input.saveDisplayName,
+        downloadsPath: input.downloadsPath,
+        kind: input.kind,
+        extOverride: path.extname(localPath) || undefined,
+      })
+      if (copied.ok && copied.destPath) {
+        twitterPath = copied.destPath
+        try {
+          fs.writeFileSync(
+            markerPath,
+            JSON.stringify({ destPath: copied.destPath, at: Date.now(), url: url.split('?')[0] }),
+            'utf8',
+          )
+        } catch {
+          /* ignore marker write */
+        }
+      }
+    }
   }
 
   return {

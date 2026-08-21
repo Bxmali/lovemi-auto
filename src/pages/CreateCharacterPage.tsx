@@ -2213,7 +2213,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           {portraitPrompt ? (
             <label style={{ display: 'block', marginTop: 12 }}>
               <div className="settings-hint" style={{ marginBottom: 6 }}>
-                立绘提示词（已写入 appearance_tags「立绘提示词:…」，可改；创建时会带上）
+                立绘提示词（本地草稿 portrait_prompt；创建时不会发给 Lovemi 服务器，仅供你对照编辑。生图只吃短 appearance_tags + 官网 enhancement）
               </div>
               <textarea
                 className="field"
@@ -2226,10 +2226,10 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
                     const appearance = Array.isArray(obj.appearance_tags)
                       ? (obj.appearance_tags as unknown[])
                           .map(String)
-                          .filter((t) => !t.startsWith('立绘提示词:'))
+                          .filter((t) => !t.startsWith('立绘提示词:') && !t.startsWith('立绘提示词：'))
                       : []
-                    if (v.trim()) appearance.push(`立绘提示词:${v.trim()}`)
                     obj.appearance_tags = appearance
+                    obj.portrait_prompt = v.trim()
                     next.payloadText = JSON.stringify(obj, null, 2)
                   } catch {
                     /* ignore */
