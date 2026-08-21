@@ -93,6 +93,30 @@ export function openAccountsDb() {
       message TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_console_logs_ts ON console_logs(ts DESC);
+
+    -- 创建角色 UI/队列状态不再依赖 localStorage。
+    CREATE TABLE IF NOT EXISTS create_char_ui_state (
+      id TEXT PRIMARY KEY,
+      state_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS create_char_reference_images (
+      slot INTEGER PRIMARY KEY CHECK(slot BETWEEN 1 AND 5),
+      mime_type TEXT NOT NULL,
+      image_data BLOB,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS create_char_runs (
+      run_id TEXT PRIMARY KEY,
+      slot INTEGER NOT NULL,
+      epoch INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_create_char_runs_status
+      ON create_char_runs(status, updated_at DESC);
   `)
   migrateConsoleSchema(db)
   return db

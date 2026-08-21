@@ -287,12 +287,46 @@ export async function cacheLovemiCdnMedia(input: {
   if (!input.proxyUrl) return { ok: false, error: '未配置出站代理' }
 
   const dir = mediaCacheDir(input.appData)
-  const identity = [input.characterId, input.assetId, input.runId].filter(Boolean).join(':')
+  const normalizedUrl = url.split('?')[0]
+  // 素材缓存必须跨运行稳定：runId/槽位/epoch 都不能参与，否则重启后会再次下载和导出。
+  const identity = [
+    input.kind || 'media',
+    input.characterId || 'unknown-character',
+    input.assetId || (input.kind === 'video' ? 'video' : input.kind === 'portrait' ? 'cover' : 'asset'),
+  ].join(':')
   const hash = createHash('sha1')
-    .update(`${url.split('?')[0]}|${identity || 'legacy'}`)
+    .update(`${normalizedUrl}|${identity}`)
     .digest('hex')
     .slice(0, 16)
-  const existing = fs.readdirSync(dir).find((f) => f.startsWith(`m-${hash}.`) || f.startsWith(`m-${hash}-`))
+  const dirFiles = fs.readdirSync(dir)
+  let existing = dirFiles.find(
+    (f) =>
+      !f.endsWith('.twitter.json') &&
+      (f.startsWith(`m-${hash}.`) || f.startsWith(`m-${hash}-`)),
+  )
+  let legacyTwitterPath: string | undefined
+  // 一次性兼容旧版含 runId 的 hash，避免升级后同一素材再下载一次。
+  if (!existing) {
+    for (const markerName of dirFiles.filter((f) => /^m-[a-f0-9]+\.twitter\.json$/i.test(f))) {
+      try {
+        const prev = JSON.parse(fs.readFileSync(path.join(dir, markerName), 'utf8')) as {
+          destPath?: string
+          url?: string
+        }
+        if (prev.url !== normalizedUrl) continue
+        const prefix = markerName.replace(/\.twitter\.json$/i, '')
+        const legacyMedia = dirFiles.find(
+          (f) => f.startsWith(`${prefix}.`) && !f.endsWith('.twitter.json'),
+        )
+        if (!legacyMedia) continue
+        existing = legacyMedia
+        if (prev.destPath && fs.existsSync(prev.destPath)) legacyTwitterPath = prev.destPath
+        break
+      } catch {
+        /* ignore bad legacy marker */
+      }
+    }
+  }
   let localPath = ''
   let fileName = ''
   let bytes = 0
@@ -327,6 +361,17 @@ export async function cacheLovemiCdnMedia(input: {
         fileName = path.basename(localPath)
       }
       bytes = st.size
+    }
+  }
+
+  if (localPath && bytes >= 1000 && !path.basename(localPath).startsWith(`m-${hash}.`)) {
+    const migratedPath = path.join(dir, `m-${hash}${path.extname(localPath) || '.bin'}`)
+    try {
+      if (!fs.existsSync(migratedPath)) fs.copyFileSync(localPath, migratedPath)
+      localPath = migratedPath
+      fileName = path.basename(migratedPath)
+    } catch {
+      // 迁移失败仍可复用旧文件，不触发重新下载。
     }
   }
 
@@ -386,21 +431,28 @@ export async function cacheLovemiCdnMedia(input: {
   if (input.saveDisplayName && input.downloadsPath) {
     // 同一 CDN/角色素材只导出一次推特资源，避免轮询缓存反复落盘 _2/_3
     const markerPath = path.join(dir, `m-${hash}.twitter.json`)
-    let reused = false
+    let reused = Boolean(legacyTwitterPath)
+    if (legacyTwitterPath) twitterPath = legacyTwitterPath
     if (fs.existsSync(markerPath)) {
       try {
         const prev = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as { destPath?: string }
         if (prev.destPath && fs.existsSync(prev.destPath) && fs.statSync(prev.destPath).size > 1000) {
           twitterPath = prev.destPath
           reused = true
-          appendConsoleLog({
-            level: 'info',
-            action: 'create_char',
-            message: `推特资源已存在，跳过重复导出 · ${path.basename(prev.destPath)}`,
-          })
         }
       } catch {
         /* ignore bad marker */
+      }
+    }
+    if (reused && twitterPath && !fs.existsSync(markerPath)) {
+      try {
+        fs.writeFileSync(
+          markerPath,
+          JSON.stringify({ destPath: twitterPath, at: Date.now(), url: normalizedUrl }),
+          'utf8',
+        )
+      } catch {
+        /* ignore marker migration */
       }
     }
     if (!reused) {

@@ -7,9 +7,58 @@ import { enqueueLovemiPasswordReset, enqueueResetMissingPasswords } from '../ser
 import { assignLocalesAndRename } from '../services/profileLocale'
 import { runEmailPageEnter } from '../motion/timelines'
 import type { EmailAccount, LovemiRegStatus } from '../types/email'
-import { maskSecret } from '../lib/parseAccounts'
 import { localeLabel } from '../lib/locales'
 import { VirtualAccountGrid } from '../components/VirtualAccountGrid'
+
+/** 明文展示；点击复制到剪贴板 */
+function CopyableSecret({
+  label,
+  value,
+  empty = '—',
+}: {
+  label: string
+  value?: string
+  empty?: string
+}) {
+  const setToast = useEmailStore((s) => s.setToast)
+  const text = (value || '').trim()
+  if (!text) return <span style={{ opacity: 0.55 }}>{empty}</span>
+  return (
+    <button
+      type="button"
+      className="ghost"
+      title={`点击复制${label}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        void navigator.clipboard.writeText(text).then(
+          () => setToast(`已复制${label}`),
+          () => setToast(`复制${label}失败`),
+        )
+      }}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        maxWidth: '100%',
+        padding: '2px 8px',
+        borderRadius: 6,
+        border: '1px solid color-mix(in srgb, var(--pink) 35%, transparent)',
+        background: 'color-mix(in srgb, var(--pink) 8%, transparent)',
+        color: 'inherit',
+        font: 'inherit',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+        fontSize: '0.82rem',
+        lineHeight: 1.45,
+        wordBreak: 'break-all',
+        textAlign: 'left',
+        cursor: 'pointer',
+      }}
+    >
+      <span style={{ opacity: 0.7, flex: '0 0 auto' }}>复制</span>
+      <span>{text}</span>
+    </button>
+  )
+}
 
 const REG_LABEL: Record<LovemiRegStatus, string> = {
   none: '未注册',
@@ -239,9 +288,13 @@ export function LovemiAccountsPage() {
               <h3>Lovemi 凭证</h3>
               <dl className="kv">
                 <dt>站内密码</dt>
-                <dd>{maskSecret(selected.lovemiPassword)}</dd>
+                <dd>
+                  <CopyableSecret label="站内密码" value={selected.lovemiPassword} />
+                </dd>
                 <dt>Bearer</dt>
-                <dd>{maskSecret(selected.lovemiSessionToken)}</dd>
+                <dd>
+                  <CopyableSecret label="Bearer" value={selected.lovemiSessionToken} />
+                </dd>
                 <dt>语言</dt>
                 <dd>{localeLabel(selected.lovemiLocale)}</dd>
                 <dt>显示名</dt>

@@ -232,6 +232,40 @@ contextBridge.exposeInMainWorld('lovemi', {
       adminAccountId: string
       downloadsDir: string
     }>,
+  createCharStateLoad: () =>
+    ipcRenderer.invoke('createChar:stateLoad') as Promise<{
+      ok: boolean
+      state?: Record<string, unknown>
+      images?: Record<number, { imageBase64: string; mimeType: string }>
+      updatedAt?: string
+    }>,
+  createCharStateLoadImage: (slot: 1 | 2 | 3 | 4 | 5) =>
+    ipcRenderer.invoke('createChar:stateLoadImage', { slot }) as Promise<{
+      ok: boolean
+      error?: string
+      imageBase64: string | null
+      mimeType: string | null
+    }>,
+  createCharStateSave: (input: {
+    state: Record<string, unknown>
+    imageUpdates?: Array<{ slot: number; mimeType: string; imageBase64: string | null }>
+  }) =>
+    ipcRenderer.invoke('createChar:stateSave', input) as Promise<{
+      ok: boolean
+      error?: string
+    }>,
+  createCharRuntimeState: () =>
+    ipcRenderer.invoke('createChar:runtimeState') as Promise<{
+      ok: boolean
+      runs: Array<{
+        runId: string
+        slot: number
+        epoch: number
+        status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+        stage: string
+        [key: string]: unknown
+      }>
+    }>,
   createCharSaveConfig: (input: {
     teamoApiBase?: string
     teamoApiKey?: string

@@ -5,6 +5,7 @@ import {
   findSlotByCharacterId,
   slotAcceptsPortrait,
   portraitMatchesSlot,
+  hydrateCreateCharStoreFromSqlite,
   CREATE_CHAR_SLOT_IDS,
   type CreateCharSlotId,
   type CreateCharSlotDraft,
@@ -42,6 +43,38 @@ function fileToBase64(file: Blob): Promise<{ base64: string; mime: string }> {
     reader.onerror = () => reject(new Error('读图失败'))
     reader.readAsDataURL(file)
   })
+}
+
+/** 限制五槽参考图的解码内存；4K/8K 原图会让 Electron Renderer 被系统 OOM kill。 */
+async function optimizeReferenceImage(blob: Blob): Promise<Blob> {
+  const MAX_SIDE = 1_600
+  const MAX_BYTES = 2_500_000
+  let bitmap: ImageBitmap | null = null
+  try {
+    bitmap = await createImageBitmap(blob)
+    const longest = Math.max(bitmap.width, bitmap.height)
+    if (longest <= MAX_SIDE && blob.size <= MAX_BYTES) return blob
+    const scale = Math.min(1, MAX_SIDE / longest)
+    const width = Math.max(1, Math.round(bitmap.width * scale))
+    const height = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (!ctx) return blob
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, width, height)
+    ctx.drawImage(bitmap, 0, 0, width, height)
+    return (
+      (await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob(resolve, 'image/jpeg', 0.9),
+      )) || blob
+    )
+  } catch {
+    return blob
+  } finally {
+    bitmap?.close()
+  }
 }
 
 function formatCompactResult(value: unknown): string {
@@ -178,8 +211,80 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   /** 永久失败的 CDN（404/410 等）：不再轮询下载，避免 toast 刷屏卡死操作感 */
   const portraitCdnDead = useRef<Set<string>>(new Set())
   const portraitDeadToastOnce = useRef<Set<string>>(new Set())
+  const sqliteHydrateStarted = useRef(false)
   /** 槽 → 当前流水线 epoch（贴新图 / 全自动开始时更新） */
   const slotRunEpoch = useRef<Record<CreateCharSlotId, number>>({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 })
+  const pushStepUnique = useCallback(
+    (slot: CreateCharSlotId, kind: 'ok' | 'err' | 'run', text: string) => {
+      const existing = useCreateCharStore.getState().slots[slot].stepLog
+      if (existing.some((entry) => entry.text === text)) return
+      pushStep(slot, kind, text)
+    },
+    [pushStep],
+  )
+
+  /** 闪退重载后：先从 SQLite 恢复五槽草稿/参考图，再接回主进程仍在跑的队列。 */
+  useEffect(() => {
+    if (sqliteHydrateStarted.current) return
+    sqliteHydrateStarted.current = true
+    let cancelled = false
+    void (async () => {
+      await hydrateCreateCharStoreFromSqlite()
+      if (cancelled) return
+      const runtime = await window.lovemi?.createCharRuntimeState?.()
+      if (cancelled || !runtime?.ok) return
+      for (const run of runtime.runs || []) {
+        const slot = Number(run.slot) as CreateCharSlotId
+        if (!CREATE_CHAR_SLOT_IDS.includes(slot)) continue
+        const cur = useCreateCharStore.getState().slots[slot]
+        // 槽已有更新任务时，旧现场不得覆盖。
+        if (cur.runId && cur.runId !== run.runId && cur.draftEpoch > Number(run.epoch || 0)) continue
+        const characterId = typeof run.characterId === 'string' ? run.characterId : ''
+        const portraitCdnUrl = typeof run.portraitCdnUrl === 'string' ? run.portraitCdnUrl : ''
+        const live = run.status === 'queued' || run.status === 'running'
+        const patch: Parameters<typeof patchSlot>[1] = {
+          runId: run.runId,
+          draftEpoch: Number(run.epoch || cur.draftEpoch),
+          queueStatus: run.status === 'queued' ? 'queued' : run.status === 'running' ? 'running' : 'idle',
+          queuePosition: run.status === 'queued' ? Math.max(1, Number(run.queuePosition || 1)) : 0,
+          busy: live ? 'auto' : 'idle',
+          waitKind: live ? 'publish' : null,
+          runStartedAt: typeof run.runStartedAt === 'number' ? run.runStartedAt : cur.runStartedAt,
+          waitStartedAt:
+            live && typeof run.runStartedAt === 'number' ? run.runStartedAt : live ? Date.now() : null,
+        }
+        if (run.payload && typeof run.payload === 'object') {
+          patch.payloadText = JSON.stringify(run.payload, null, 2)
+        }
+        if (typeof run.portraitPrompt === 'string') patch.portraitPrompt = run.portraitPrompt
+        if (characterId) {
+          patch.createdCharacterId = characterId
+          patch.portraitCharacterId = characterId
+        }
+        if (typeof run.portraitJobId === 'string') patch.portraitJobId = run.portraitJobId
+        if (typeof run.coverAssetId === 'string') patch.motionInputAssetId = run.coverAssetId
+        if (typeof run.videoAssetId === 'string') patch.motionOutputAssetId = run.videoAssetId
+        if (typeof run.videoCdnUrl === 'string') patch.motionPreviewUrl = run.videoCdnUrl
+        if (typeof run.listingId === 'string') patch.listingId = run.listingId
+        if (typeof run.motionPrompt === 'string') patch.motionPrompt = run.motionPrompt
+        if (portraitCdnUrl && characterId) {
+          if (!cur.portraitCacheUrl) patch.portraitUrl = portraitCdnUrl
+          patch.portraitCdnUrl = portraitCdnUrl
+        }
+        patchSlot(slot, patch)
+        if (run.status === 'interrupted') {
+          const latest = useCreateCharStore.getState().slots[slot]
+          const text = characterId
+            ? '上次 App 进程中断，已恢复角色现场；将从站内资产继续拉取，不会重新创建角色'
+            : '上次 App 进程中断，已恢复参考图与参数；未重复提交创建请求'
+          if (!latest.stepLog.some((entry) => entry.text === text)) pushStepUnique(slot, 'err', text)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [patchSlot, pushStepUnique])
 
   const beginSlotRun = useCallback(
     (slotId: CreateCharSlotId, clearCharacter: boolean) => {
@@ -222,6 +327,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       partial: {
         portraitUrl: string
         portraitCdnUrl: string
+        portraitCacheUrl?: string
         motionInputAssetId?: string
       },
       expectedEpoch?: number,
@@ -250,11 +356,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     (id) => slots[id].queueStatus === 'idle' && slots[id].busy !== 'idle',
   )
   useEffect(() => {
-    if (!anySlotWaiting) return
+    if (!active || !anySlotWaiting) return
     setNowMs(Date.now())
     const timer = window.setInterval(() => setNowMs(Date.now()), 250)
     return () => window.clearInterval(timer)
-  }, [anySlotWaiting])
+  }, [active, anySlotWaiting])
 
   const slotElapsedSec = useCallback(
     (slot: CreateCharSlotDraft) => {
@@ -334,7 +440,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       if (expectedRunId && current.runId !== expectedRunId) return false
       if (res.ok && res.cacheUrl) {
         write({ motionPreviewUrl: res.cacheUrl })
-        pushStep(slotId, 'ok', '视频预览缓存已完成')
+        pushStepUnique(slotId, 'ok', '视频预览缓存已完成')
         setToast(res.twitterPath ? `槽${slotId}：视频已存推特资源` : `槽${slotId}：视频预览已就绪`)
         return Boolean(res.twitterPath)
       } else {
@@ -343,7 +449,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         return false
       }
     },
-    [patchSlot, setToast, characterDisplayName, pushStep],
+    [patchSlot, setToast, characterDisplayName, pushStepUnique],
   )
 
   const ensurePortraitDownloaded = useCallback(
@@ -409,7 +515,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           const ok = applyPortraitUpdate(
             slotId,
             charAtStart,
-            { portraitUrl: res.cacheUrl, portraitCdnUrl: cdnOrUrl },
+            {
+              portraitUrl: res.cacheUrl,
+              portraitCdnUrl: cdnOrUrl,
+              portraitCacheUrl: res.cacheUrl,
+            },
             epochAtStart,
           )
           if (!ok) {
@@ -417,11 +527,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             return false
           }
           if (res.twitterPath) {
-            pushStep(slotId, 'ok', `立绘已存推特资源 · ${name}`)
+            pushStepUnique(slotId, 'ok', `立绘已存推特资源 · ${name}`)
             setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
             return true
           } else {
-            pushStep(slotId, 'ok', '立绘预览已缓存')
+            pushStepUnique(slotId, 'ok', '立绘预览已缓存')
             return false
           }
         }
@@ -486,7 +596,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         return false
       }
     },
-    [setToast, characterDisplayName, pushStep, applyPortraitUpdate, patchSlot],
+    [setToast, characterDisplayName, pushStepUnique, applyPortraitUpdate, patchSlot],
   )
 
   const waitMaxSec =
@@ -695,7 +805,8 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         setToast('请粘贴图片（不是文字）')
         return
       }
-      const { base64, mime } = await fileToBase64(blob)
+      const optimized = await optimizeReferenceImage(blob)
+      const { base64, mime } = await fileToBase64(optimized)
       const st = useCreateCharStore.getState()
       const slotId = st.activeSlot
       const old = st.slots[slotId]
@@ -715,7 +826,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       patchSlot(slotId, {
         imageBase64: base64,
         mimeType: mime,
-        previewUrl: URL.createObjectURL(blob),
+        previewUrl: URL.createObjectURL(optimized),
         payloadText: '',
         portraitPrompt: '',
         userHint: old.userHint,
@@ -778,7 +889,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           waitStartedAt: startedAt,
           runStartedAt: startedAt,
         })
-        pushStep(slotId, 'run', '已出队 · 开始独占全自动流水线')
+        pushStepUnique(slotId, 'run', '已出队 · 开始独占全自动流水线')
         return
       }
       if (p.stage === 'cancelled') {
@@ -800,7 +911,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           waitStartedAt: null,
           waitKind: null,
         })
-        if (failMsg) pushStep(slotId, 'err', `全自动失败 · ${failMsg}`)
+        if (failMsg) pushStepUnique(slotId, 'err', `全自动失败 · ${failMsg}`)
         return
       }
       const charId = p.characterId?.trim()
@@ -844,24 +955,31 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       // 全自动素材只在最终结果完成后统一下载并等待结果；避免 progress 与最终回调重复抓取。
 
       if (p.stage === 'portrait' && p.portraitCdnUrl) {
-        pushStep(slotId, 'ok', `立绘已完成 · 继续生成视频`)
+        pushStepUnique(slotId, 'ok', `立绘已完成 · 继续生成视频`)
         setToast(`槽${slotId}：立绘已拉回 · 继续生成视频…`)
       } else if (p.stage === 'analyzed') {
-        pushStep(slotId, 'ok', `分析已完成 · ${String(p.payload?.display_name || '角色')}`)
+        pushStepUnique(slotId, 'ok', `分析已完成 · ${String(p.payload?.display_name || '角色')}`)
         setToast(`槽${slotId}：参数已生成 · ${String(p.payload?.display_name || '')}`)
       } else if (p.stage === 'video') {
-        pushStep(slotId, 'run', '开始生成动态视频…')
+        pushStepUnique(slotId, 'run', '开始生成动态视频…')
         setToast(`槽${slotId}：开始生成动态视频…`)
       } else if (p.stage === 'create' && p.characterId) {
-        pushStep(slotId, 'ok', `角色已创建 · ${p.characterId.slice(0, 18)}… · 等待立绘`)
+        pushStepUnique(slotId, 'ok', `角色已创建 · ${p.characterId.slice(0, 18)}… · 等待立绘`)
         setToast(`槽${slotId}：角色已创建 · 等待立绘…`)
       } else if (p.stage === 'published') {
-        pushStep(slotId, 'ok', `发布已完成${p.listingId ? ` · ${p.listingId}` : ''}`)
+        pushStepUnique(slotId, 'ok', `发布已完成${p.listingId ? ` · ${p.listingId}` : ''}`)
       } else if (p.stage === 'video_failed') {
-        pushStep(slotId, 'err', '视频/发布阶段失败（见下方结果）')
+        pushStepUnique(slotId, 'err', '视频/发布阶段失败（见下方结果）')
       }
     })
-  }, [patchSlot, setToast, ensurePlayableVideoUrl, ensurePortraitDownloaded, pushStep, applyPortraitUpdate])
+  }, [
+    patchSlot,
+    setToast,
+    ensurePlayableVideoUrl,
+    ensurePortraitDownloaded,
+    pushStepUnique,
+    applyPortraitUpdate,
+  ])
 
   const saveRelay = async () => {
     const savePatch: {

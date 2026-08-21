@@ -151,9 +151,10 @@ SEXUAL KINK RULES（性癖 = 生理/性需求，不是性格）：
 - Keep it adult, specific, and character-flavored.
 
 NAME RULES:
-- East Asian: UNIQUE cute **Chinese** girl name (2 **or** 3 汉字). NEVER reuse 柚子/千夏/陽葵/芽衣/宁宁/瑾萱/葵/琴音.
-- Western / European: UNIQUE **English** name (Latin letters; First or First Last). Never Chinese characters in display_name.
-- The app MAY replace display_name from an unused pool — still invent varied names; never blank; NO digits.
+- **USER HINT OVERRIDES EVERYTHING (strongest rule):** If user notes already specify the character identity / name / role (e.g. 黑寡妇、Black Widow、Natasha、叫小雪、角色是林婉), display_name MUST be that identity (as written, or the clear canonical form). Do NOT invent a random pool name. Do NOT ignore 黑寡妇 just because ancestry is western.
+- East Asian (only when hint has NO explicit character/name): UNIQUE cute **Chinese** girl name (2 **or** 3 汉字). NEVER reuse 柚子/千夏/陽葵/芽衣/宁宁/瑾萱/葵/琴音.
+- Western / European (only when hint has NO explicit character/name): UNIQUE **English** name (Latin letters; First or First Last). Never Chinese characters in display_name.
+- The app replaces display_name from an unused pool ONLY when the user hint does NOT name a character; never blank; NO digits.
 
 RELATIONSHIP RULES:
 - relationship_tags MUST be exactly ONE string randomly chosen from:
@@ -793,15 +794,106 @@ function nameRegionFromPayload(payload: Record<string, unknown>): 'zh' | 'jp' | 
   return 'zh'
 }
 
+const HINT_NAME_NOISE = new Set([
+  '欧美',
+  '东亚',
+  '西方',
+  '欧洲',
+  '写实',
+  '写真',
+  '角色',
+  '女孩',
+  '女人',
+  '生成',
+  '创建',
+  '参考',
+  '提示',
+  '性感',
+  '可爱',
+  '成年',
+  '成人',
+  '模特',
+  '女主',
+  '人物',
+  '立绘',
+  '视频',
+  '欧美角色',
+  '东亚角色',
+  '西方角色',
+  '欧洲角色',
+  'western',
+  'european',
+  'asian',
+  'realistic',
+])
+
+function cleanHintName(raw: string | undefined): string | undefined {
+  const name = (raw || '')
+    .trim()
+    .replace(/^[\s「『"'《【（(]+|[」』"'》】）)\s]+$/g, '')
+    .replace(/\d+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!name || name.length < 2 || name.length > 40) return undefined
+  if (/^\d+$/.test(name)) return undefined
+  if (HINT_NAME_NOISE.has(name.toLowerCase())) return undefined
+  // 指令短语 / 「欧美角色」类，不是角色专名
+  if (/^(生成|创建|参考|提示|做成|改成)/.test(name)) return undefined
+  if (/角色$/.test(name)) return undefined
+  if (/^(角色|名字|昵称|提示|生成|创建)/.test(name) && name.length <= 4) return undefined
+  return name
+}
+
+/**
+ * 用户提示词里的角色身份 = 强约束，优先于一切随机起名。
+ * 支持：名字是X / 扮演黑寡妇 / Black Widow / 「小雪」 / 逗号分隔的专名。
+ */
 function extractNameFromUserHint(hint?: string): string | undefined {
   const h = (hint || '').trim()
   if (!h) return undefined
-  const m =
-    h.match(/(?:名字|昵称|叫|名为|name)\s*[:：是为]?\s*[「『"']?([\u4e00-\u9fffA-Za-z·]{2,12})/) ||
-    h.match(/^[「『"']?([\u4e00-\u9fff]{2,4})[」』"']?\s*$/)
-  const name = m?.[1]?.trim()
-  if (!name || /^\d+$/.test(name)) return undefined
-  return name
+
+  const labeled = [
+    /(?:名字|昵称|角色名|角色名字|名叫|名为|display[_ ]?name|name)\s*[:：=是为]?\s*[「『"']?([^\n「」『』"'，,。；;]{2,40})/i,
+    /(?:扮演|cos(?:play)?\s*|角色是|角色为)\s*[「『"']?([^\n「」『』"'，,。；;]{2,40})/i,
+    /(?:就是|必须是|要做)\s*[「『"']?([\u4e00-\u9fffA-Za-z][\u4e00-\u9fffA-Za-z .·'\-]{1,38})/,
+  ]
+  for (const re of labeled) {
+    const name = cleanHintName(h.match(re)?.[1])
+    if (name) return name
+  }
+
+  const quoted = cleanHintName(h.match(/[「『《【]([\u4e00-\u9fffA-Za-z .·'\-]{2,40})[」』》】]/)?.[1])
+  if (quoted) return quoted
+
+  // English title-case identity: Black Widow / Scarlett Johansson
+  const enTitle = cleanHintName(
+    h.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/)?.[1],
+  )
+  if (enTitle && !HINT_NAME_NOISE.has(enTitle.toLowerCase())) return enTitle
+
+  // 整段就是名字
+  const whole = cleanHintName(
+    h.match(/^[「『"']?([\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z .·'\-]{1,38})[」』"']?\s*$/)?.[1],
+  )
+  if (whole) return whole
+
+  // 「生成欧美角色，黑寡妇，写实」→ 取非噪声的中文/英文专名片段（优先靠后的专名）
+  const segments = h.split(/[,，。；;\n|/]+/).map((p) => p.trim()).filter(Boolean)
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const token = cleanHintName(segments[i])
+    if (!token) continue
+    if (/^[\u4e00-\u9fff]{2,8}$/.test(token)) return token
+    if (/^[A-Za-z][A-Za-z .·'\-]{1,38}$/.test(token)) return token
+  }
+
+  // 「欧美角色 黑寡妇」空格分隔：从后往前找中文专名
+  const words = h.split(/\s+/).filter(Boolean)
+  for (let i = words.length - 1; i >= 0; i--) {
+    const token = cleanHintName(words[i])
+    if (token && /^[\u4e00-\u9fff]{2,8}$/.test(token)) return token
+  }
+
+  return undefined
 }
 
 /** 过热/示例名：模型爱抄，直接重抽 */
@@ -834,14 +926,14 @@ const OVERUSED_NAMES = new Set([
 ])
 
 /**
- * 可爱女孩名：默认中文大词库抽**未用过**的；用户 hint 指定则尊重。
- * 不信任模型返回名（极易撞车）。欧美强制英文名。
+ * 可爱女孩名：用户 hint 里的角色身份 = 强提示，优先于一切（含欧美英文名池 / 模型返回名）。
+ * 未指定时才从词库抽未用名（不信任模型返回名，极易撞车）。
  */
 function ensureDisplayName(payload: Record<string, unknown>, userHint?: string) {
   const hinted = extractNameFromUserHint(userHint)
   if (hinted) {
-    payload.display_name = hinted.replace(/\d+/g, '').trim() || hinted
-    rememberName(String(payload.display_name))
+    payload.display_name = hinted
+    rememberName(hinted)
     return
   }
 
@@ -1225,10 +1317,13 @@ export async function analyzeReferenceImage(input: {
       'FOOT LOCK: if feet visible, detail 脚; NEVER invent heels when socked/bare.',
       'CLOTHING: sexier within same type, NEVER 露点.',
       'If East Asian: language zh-CN; lock 东亚中日韩; Chinese display_name; FORBID 欧美脸.',
-      'If Western/European: language MUST be en-US; English display_name; appearance/personality may stay Chinese; ancestry 欧洲裔; no 东亚锁.',
+      'If Western/European: language MUST be en-US; English display_name UNLESS user notes already name the character; appearance/personality may stay Chinese; ancestry 欧洲裔; no 东亚锁.',
       '性癖 = real sexual preference (足交/被口/SM/骑乘等), NEVER「喜欢被夸奖」.',
-      'display_name: East Asian → UNIQUE cute Chinese 2–3字; Western → UNIQUE English name; NO digits.',
-      hint ? `\nUser notes (must respect for name/lore/occupation):\n${hint}` : '',
+      'display_name DEFAULT: East Asian → UNIQUE cute Chinese 2–3字; Western → UNIQUE English name; NO digits.',
+      'display_name OVERRIDE (strongest): if user notes name a character (黑寡妇/Black Widow/叫小雪/角色是…), display_name MUST be that identity — never random pool name.',
+      hint
+        ? `\nUser notes (STRONG — character identity/name/lore/occupation OVERRIDE defaults):\n${hint}`
+        : '',
     ]
       .filter(Boolean)
       .join('\n')

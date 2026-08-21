@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, net, session, type WebContents } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { probeAccount, probeAccountsBatch, testProxyConnectivity, type ProbeInput } from './mailProbe'
 import { registerLovemiAccount, type RegisterInput } from './lovemiRegister'
@@ -44,6 +45,15 @@ import { requestCompanionMotionVideo, fetchLatestCharacterVideo } from './lovemi
 import { autoVideoAndPublish, fullAutoToPublish, generateMotionVideoOnly } from './lovemiAutoPublish'
 import { cacheLovemiCdnMedia, mediaCacheDir } from './lovemiMediaCache'
 import { generateSocialCaption } from './lovemiCaptionGen'
+import {
+  loadCreateCharReferenceImage,
+  loadCreateCharUiState,
+  loadRecoverableCreateCharRuns,
+  markActiveCreateCharRunsInterrupted,
+  saveCreateCharRun,
+  saveCreateCharUiState,
+  type CreateCharRunSnapshot,
+} from './createCharStateDb'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = !app.isPackaged
@@ -96,7 +106,10 @@ function patchDevDockName() {
 let mainWindow: BrowserWindow | null = null
 let recoveringRenderer = false
 
-function recoverMainWindow(reason: string) {
+function recoverMainWindow(crashedWindow: BrowserWindow, reason: string) {
+  // 旧窗口 destroy 后还可能迟到多个 render-process-gone 事件。
+  // 绝不能让旧事件误杀刚创建的新窗口，否则会形成 2~6 秒一次的闪退循环。
+  if (crashedWindow !== mainWindow || crashedWindow.isDestroyed()) return
   if (recoveringRenderer) return
   recoveringRenderer = true
   appendConsoleLog({
@@ -105,7 +118,7 @@ function recoverMainWindow(reason: string) {
     message: `窗口渲染进程异常，自动恢复 · ${reason}`.slice(0, 220),
   })
   try {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy()
+    if (!crashedWindow.isDestroyed()) crashedWindow.destroy()
   } catch {
     /* ignore */
   }
@@ -120,7 +133,7 @@ function recoverMainWindow(reason: string) {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 960,
@@ -148,19 +161,21 @@ function createWindow() {
     },
   })
 
+  mainWindow = window
+
   if (isDev) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173')
+    window.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173')
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    window.loadFile(path.join(__dirname, '../dist/index.html'))
   }
 
-  mainWindow.on('closed', () => {
-    mainWindow = null
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
   })
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    recoverMainWindow(`render-process-gone:${details.reason}`)
+  window.webContents.on('render-process-gone', (_event, details) => {
+    recoverMainWindow(window, `render-process-gone:${details.reason}`)
   })
-  mainWindow.webContents.on('unresponsive', () => {
+  window.webContents.on('unresponsive', () => {
     appendConsoleLog({
       level: 'warn',
       action: 'ui',
@@ -210,6 +225,40 @@ if (!gotLock) {
                     : ext === '.webp'
                       ? 'image/webp'
                       : 'application/octet-stream'
+        const stat = await fs.promises.stat(filePath)
+        const range = request.headers.get('range')
+        if (range && /^video\//.test(mime)) {
+          const match = range.match(/bytes=(\d*)-(\d*)/)
+          if (match) {
+            const start = match[1] ? Number(match[1]) : 0
+            const requestedEnd = match[2] ? Number(match[2]) : stat.size - 1
+            const end = Math.min(stat.size - 1, Math.max(start, requestedEnd))
+            if (start >= stat.size || start < 0) {
+              return new Response(null, {
+                status: 416,
+                headers: { 'Content-Range': `bytes */${stat.size}` },
+              })
+            }
+            const length = end - start + 1
+            const data = Buffer.allocUnsafe(length)
+            const handle = await fs.promises.open(filePath, 'r')
+            try {
+              await handle.read(data, 0, length, start)
+            } finally {
+              await handle.close()
+            }
+            return new Response(data, {
+              status: 206,
+              headers: {
+                'Content-Type': mime,
+                'Content-Length': String(length),
+                'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'public, max-age=31536000, immutable',
+              },
+            })
+          }
+        }
         const data = await fs.promises.readFile(filePath)
         return new Response(data, {
           status: 200,
@@ -217,6 +266,7 @@ if (!gotLock) {
             'Content-Type': mime,
             'Content-Length': String(data.length),
             'Accept-Ranges': 'bytes',
+            'Cache-Control': 'public, max-age=31536000, immutable',
           },
         })
       } catch (err) {
@@ -240,6 +290,9 @@ if (!gotLock) {
     try {
       ensureCopyLibrariesSeeded()
       releaseWorkingActions()
+      // 上一整个 App 进程若被杀，保留现场但标记为 interrupted。
+      // 渲染进程单独闪退时主进程不退出，运行任务仍会继续。
+      markActiveCreateCharRunsInterrupted()
     } catch (err) {
       console.error('[console] seed failed', err)
     }
@@ -477,6 +530,24 @@ ipcMain.handle(
 )
 
 ipcMain.handle('createChar:config', () => createCharConfigPublic())
+ipcMain.handle('createChar:stateLoad', () => loadCreateCharUiState())
+ipcMain.handle('createChar:stateLoadImage', (_e, input: { slot?: number }) =>
+  loadCreateCharReferenceImage(Number(input?.slot || 0)),
+)
+ipcMain.handle(
+  'createChar:stateSave',
+  (
+    _e,
+    input: {
+      state?: Record<string, unknown>
+      imageUpdates?: Array<{ slot: number; mimeType: string; imageBase64: string | null }>
+    },
+  ) =>
+    saveCreateCharUiState({
+      state: input?.state || {},
+      imageUpdates: input?.imageUpdates,
+    }),
+)
 
 ipcMain.handle(
   'createChar:saveConfig',
@@ -826,7 +897,8 @@ ipcMain.handle(
 )
 
 type FullAutoQueueInput = {
-  imageBase64: string
+  imageBase64?: string
+  imagePath?: string
   mimeType?: string
   proxyUrl?: string
   sessionToken?: string
@@ -844,8 +916,77 @@ type FullAutoQueueItem = {
 
 const fullAutoQueue: FullAutoQueueItem[] = []
 const cancelledFullAutoRuns = new Set<string>()
+const fullAutoRuntime = new Map<string, CreateCharRunSnapshot>()
 let fullAutoQueueRunning = false
 let activeFullAutoRunId = ''
+
+function stagedFullAutoImagePath(runId: string) {
+  const safeId = createHash('sha1').update(runId).digest('hex')
+  const dir = path.join(APP_DATA, 'create-char-queue')
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, `${safeId}.image`)
+}
+
+function cleanupStagedFullAutoImage(input: FullAutoQueueInput) {
+  if (!input.imagePath) return
+  try {
+    fs.unlinkSync(input.imagePath)
+  } catch {
+    /* already removed */
+  }
+}
+
+function broadcastCreateCharProgress(progress: Record<string, unknown>) {
+  const target = mainWindow
+  if (!target || target.isDestroyed() || target.webContents.isDestroyed()) return
+  target.webContents.send('createChar:progress', progress)
+}
+
+function persistFullAutoProgress(
+  item: FullAutoQueueItem,
+  progress: Record<string, unknown>,
+  status?: CreateCharRunSnapshot['status'],
+) {
+  const runId = item.input.clientRunId
+  const previous = fullAutoRuntime.get(runId)
+  const stage = String(progress.stage || previous?.stage || 'queued')
+  const nextStatus: CreateCharRunSnapshot['status'] =
+    status ||
+    (stage === 'queued'
+      ? 'queued'
+      : stage === 'cancelled'
+        ? 'cancelled'
+        : stage === 'failed' || stage === 'video_failed'
+          ? 'failed'
+          : stage === 'published'
+            ? 'completed'
+            : 'running')
+  const snapshot: CreateCharRunSnapshot = {
+    ...(previous || {}),
+    ...progress,
+    runId,
+    slot: Number(item.input.clientSlot || previous?.slot || 1),
+    epoch: Number(item.input.clientRunEpoch || previous?.epoch || 0),
+    status: nextStatus,
+    stage,
+    clientSlot: item.input.clientSlot,
+    clientRunEpoch: item.input.clientRunEpoch,
+  }
+  fullAutoRuntime.set(runId, snapshot)
+  try {
+    saveCreateCharRun(snapshot)
+  } catch (error) {
+    appendConsoleLog({
+      level: 'warn',
+      action: 'create_char',
+      message: `队列现场写入 SQLite 失败 · ${error instanceof Error ? error.message : String(error)}`.slice(
+        0,
+        220,
+      ),
+    })
+  }
+  broadcastCreateCharProgress(snapshot)
+}
 
 function sendFullAutoQueueProgress(
   item: FullAutoQueueItem,
@@ -854,17 +995,22 @@ function sendFullAutoQueueProgress(
   runStartedAt?: number,
   error?: string,
 ) {
-  if (item.sender.isDestroyed()) return
-  item.sender.send('createChar:progress', {
+  persistFullAutoProgress(item, {
     stage,
     queuePosition,
-    runId: item.input.clientRunId,
     runStartedAt,
-    clientSlot: item.input.clientSlot,
-    clientRunEpoch: item.input.clientRunEpoch,
     error,
   })
 }
+
+ipcMain.handle('createChar:runtimeState', () => {
+  const live = [...fullAutoRuntime.values()]
+  const persisted = loadRecoverableCreateCharRuns()
+  const byRun = new Map<string, CreateCharRunSnapshot>()
+  for (const snapshot of persisted) byRun.set(snapshot.runId, snapshot)
+  for (const snapshot of live) byRun.set(snapshot.runId, snapshot)
+  return { ok: true, runs: [...byRun.values()] }
+})
 
 function refreshFullAutoQueuePositions() {
   fullAutoQueue.forEach((item, index) => sendFullAutoQueueProgress(item, 'queued', index + 1))
@@ -881,28 +1027,33 @@ async function drainFullAutoQueue() {
       if (cancelledFullAutoRuns.delete(input.clientRunId)) {
         sendFullAutoQueueProgress(item, 'cancelled')
         item.resolve({ ok: false, cancelled: true, runId: input.clientRunId, error: '排队任务已取消' })
+        cleanupStagedFullAutoImage(input)
         continue
       }
       if (!input.proxyUrl) {
         item.resolve({ ok: false, runId: input.clientRunId, error: '未配置出站代理（禁止直连）' })
+        cleanupStagedFullAutoImage(input)
         continue
       }
-      if (!input.imageBase64) {
+      if (!input.imagePath || !fs.existsSync(input.imagePath)) {
         item.resolve({ ok: false, runId: input.clientRunId, error: '请先粘贴参考图' })
+        cleanupStagedFullAutoImage(input)
         continue
       }
       const secrets = loadCreateCharSecrets()
       const token = secrets.adminSessionToken || input.sessionToken || ''
       if (!token) {
         item.resolve({ ok: false, runId: input.clientRunId, error: '请配置管理员 Bearer' })
+        cleanupStagedFullAutoImage(input)
         continue
       }
       const runStartedAt = Date.now()
       activeFullAutoRunId = input.clientRunId
       sendFullAutoQueueProgress(item, 'running', 0, runStartedAt)
       try {
+        const imageBase64 = fs.readFileSync(input.imagePath).toString('base64')
         const result = await fullAutoToPublish({
-          imageBase64: input.imageBase64,
+          imageBase64,
           mimeType: input.mimeType,
           proxyUrl: input.proxyUrl,
           sessionToken: token,
@@ -911,13 +1062,9 @@ async function drainFullAutoQueue() {
           runStartedAt,
           isCancelled: () => cancelledFullAutoRuns.has(input.clientRunId),
           onProgress: (p) => {
-            if (item.sender.isDestroyed()) return
-            item.sender.send('createChar:progress', {
+            persistFullAutoProgress(item, {
               ...p,
-              runId: input.clientRunId,
               runStartedAt,
-              clientSlot: input.clientSlot,
-              clientRunEpoch: input.clientRunEpoch,
             })
           },
         })
@@ -930,8 +1077,30 @@ async function drainFullAutoQueue() {
             typeof result.error === 'string' ? result.error : '全自动失败',
           )
         }
+        persistFullAutoProgress(
+          item,
+          {
+            ...result,
+            stage: result.ok ? 'published' : (result as { cancelled?: boolean }).cancelled ? 'cancelled' : 'failed',
+            runStartedAt,
+          },
+          result.ok
+            ? 'completed'
+            : (result as { cancelled?: boolean }).cancelled
+              ? 'cancelled'
+              : 'failed',
+        )
         item.resolve({ ...result, runId: input.clientRunId, runStartedAt })
       } catch (error) {
+        persistFullAutoProgress(
+          item,
+          {
+            stage: 'failed',
+            runStartedAt,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'failed',
+        )
         item.resolve({
           ok: false,
           runId: input.clientRunId,
@@ -939,6 +1108,7 @@ async function drainFullAutoQueue() {
           error: error instanceof Error ? error.message : String(error),
         })
       } finally {
+        cleanupStagedFullAutoImage(input)
         cancelledFullAutoRuns.delete(input.clientRunId)
         if (activeFullAutoRunId === input.clientRunId) activeFullAutoRunId = ''
       }
@@ -950,8 +1120,21 @@ async function drainFullAutoQueue() {
 
 ipcMain.handle('createChar:fullAutoPublish', async (_e, input: FullAutoQueueInput) => {
   if (!input.clientRunId) return { ok: false, error: '缺少全自动 runId' }
+  if (!input.imageBase64) return { ok: false, error: '请先粘贴参考图' }
+  let imagePath = ''
+  try {
+    imagePath = stagedFullAutoImagePath(input.clientRunId)
+    fs.writeFileSync(imagePath, Buffer.from(input.imageBase64, 'base64'))
+  } catch (error) {
+    return {
+      ok: false,
+      error: `暂存参考图失败：${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
   return new Promise<Record<string, unknown>>((resolve) => {
-    const item: FullAutoQueueItem = { input, sender: _e.sender, resolve }
+    // 排队数组只保留文件路径，避免 5 槽 base64 在主进程再复制一份。
+    const queuedInput: FullAutoQueueInput = { ...input, imageBase64: undefined, imagePath }
+    const item: FullAutoQueueItem = { input: queuedInput, sender: _e.sender, resolve }
     fullAutoQueue.push(item)
     sendFullAutoQueueProgress(item, 'queued', fullAutoQueue.length)
     refreshFullAutoQueuePositions()
@@ -974,6 +1157,7 @@ ipcMain.handle('createChar:cancelFullAuto', async (_e, input: { runId?: string }
     const item = fullAutoQueue[i]
     if (item.input.clientRunId !== runId) continue
     fullAutoQueue.splice(i, 1)
+    cleanupStagedFullAutoImage(item.input)
     sendFullAutoQueueProgress(item, 'cancelled')
     item.resolve({ ok: false, cancelled: true, runId, error: '排队任务已取消' })
     cancelledFullAutoRuns.delete(runId)

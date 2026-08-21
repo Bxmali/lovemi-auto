@@ -29,6 +29,7 @@ export type CreateCharSlotDraft = {
   payloadText: string
   portraitUrl: string | null
   portraitCdnUrl: string | null
+  portraitCacheUrl: string | null
   portraitPrompt: string
   busy: CreateCharBusy
   wantPortrait: boolean
@@ -97,6 +98,7 @@ const SLOT_DEFAULTS: CreateCharSlotDraft = {
   payloadText: '',
   portraitUrl: null,
   portraitCdnUrl: null,
+  portraitCacheUrl: null,
   portraitPrompt: '',
   busy: 'idle',
   wantPortrait: true,
@@ -183,7 +185,12 @@ function normalizeSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCha
   base.previewUrl = null
   const cdn = extractPortraitCdn(base)
   base.portraitCdnUrl = cdn
-  base.portraitUrl = cdn
+  base.portraitCacheUrl =
+    base.portraitCacheUrl?.startsWith('lovemi-cache://') ||
+    base.portraitUrl?.startsWith('lovemi-cache://')
+      ? (base.portraitCacheUrl || base.portraitUrl)
+      : null
+  base.portraitUrl = base.portraitCacheUrl || cdn
   if (base.portraitUrl && base.createdCharacterId && !base.portraitCharacterId) {
     base.portraitCharacterId = base.createdCharacterId
   }
@@ -207,11 +214,38 @@ function normalizeSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCha
   return base
 }
 
+function normalizeSqlSlot(raw: Partial<CreateCharSlotDraft> | undefined): CreateCharSlotDraft {
+  const base = { ...SLOT_DEFAULTS, ...(raw || {}) }
+  const cdn = extractPortraitCdn(base)
+  base.portraitCdnUrl = cdn
+  base.portraitCacheUrl =
+    base.portraitCacheUrl?.startsWith('lovemi-cache://') ||
+    base.portraitUrl?.startsWith('lovemi-cache://')
+      ? (base.portraitCacheUrl || base.portraitUrl)
+      : null
+  base.portraitUrl = base.portraitCacheUrl || cdn
+  base.lastResult = scrubHugeText(base.lastResult)
+  base.publishResult = scrubHugeText(base.publishResult)
+  base.stepLog = Array.isArray(base.stepLog)
+    ? base.stepLog
+        .filter((s) => s && typeof s.text === 'string')
+        .slice(-60)
+        .map((s) => ({
+          id: String(s.id || `${s.at}-${Math.random()}`),
+          at: typeof s.at === 'number' ? s.at : Date.now(),
+          kind: s.kind === 'err' || s.kind === 'run' ? s.kind : 'ok',
+          text: String(s.text).slice(0, 240),
+        }))
+    : []
+  return base
+}
+
 function clearGeneratedResult(slot: CreateCharSlotDraft): CreateCharSlotDraft {
   return {
     ...slot,
     portraitUrl: null,
     portraitCdnUrl: null,
+    portraitCacheUrl: null,
     createdCharacterId: '',
     portraitCharacterId: '',
     portraitJobId: '',
@@ -303,6 +337,11 @@ function persistSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
     payloadText: s.payloadText,
     portraitUrl: cdn,
     portraitCdnUrl: cdn,
+    portraitCacheUrl:
+      s.portraitCacheUrl?.startsWith('lovemi-cache://') ||
+      s.portraitUrl?.startsWith('lovemi-cache://')
+        ? (s.portraitCacheUrl || s.portraitUrl)
+        : null,
     portraitPrompt: s.portraitPrompt,
     userHint: s.userHint,
     createdCharacterId: s.createdCharacterId,
@@ -325,22 +364,45 @@ function persistSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
   }
 }
 
+function persistSqlSlot(s: CreateCharSlotDraft): Partial<CreateCharSlotDraft> {
+  return {
+    ...persistSlot(s),
+    // 图片二进制单独写 create_char_reference_images，不放 JSON。
+    imageBase64: null,
+    previewUrl: null,
+    busy: s.busy,
+    waitStartedAt: s.waitStartedAt,
+    waitKind: s.waitKind,
+    draftEpoch: s.draftEpoch,
+    queueStatus: s.queueStatus,
+    queuePosition: s.queuePosition,
+    runId: s.runId,
+    runStartedAt: s.runStartedAt,
+  }
+}
+
+function buildPersistedState(s: CreateCharState, forSqlite = false): PersistedV2 {
+  const map = (slot: CreateCharSlotId) =>
+    forSqlite ? persistSqlSlot(s.slots[slot]) : persistSlot(s.slots[slot])
+  return {
+    version: 2,
+    activeSlot: s.activeSlot,
+    adminId: s.adminId,
+    teamoBase: s.teamoBase,
+    teamoModel: s.teamoModel,
+    slots: {
+      1: map(1),
+      2: map(2),
+      3: map(3),
+      4: map(4),
+      5: map(5),
+    },
+  }
+}
+
 function savePersisted(s: CreateCharState) {
   try {
-    const payload: PersistedV2 = {
-      version: 2,
-      activeSlot: s.activeSlot,
-      adminId: s.adminId,
-      teamoBase: s.teamoBase,
-      teamoModel: s.teamoModel,
-      slots: {
-        1: persistSlot(s.slots[1]),
-        2: persistSlot(s.slots[2]),
-        3: persistSlot(s.slots[3]),
-        4: persistSlot(s.slots[4]),
-        5: persistSlot(s.slots[5]),
-      },
-    }
+    const payload = buildPersistedState(s)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
   } catch {
     /* quota — 再试：丢掉大字段 */
@@ -362,9 +424,43 @@ function savePersisted(s: CreateCharState) {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleSave(s: CreateCharState) {
+let sqliteSaveTimer: ReturnType<typeof setTimeout> | null = null
+let sqliteHydrated = false
+const pendingImageUpdates = new Map<
+  CreateCharSlotId,
+  { slot: CreateCharSlotId; mimeType: string; imageBase64: string | null }
+>()
+
+function scheduleSqliteSave(
+  imageUpdate?: { slot: CreateCharSlotId; mimeType: string; imageBase64: string | null },
+) {
+  if (imageUpdate) pendingImageUpdates.set(imageUpdate.slot, imageUpdate)
+  if (!sqliteHydrated || !window.lovemi?.createCharStateSave) return
+  if (sqliteSaveTimer) clearTimeout(sqliteSaveTimer)
+  sqliteSaveTimer = setTimeout(() => {
+    sqliteSaveTimer = null
+    const latest = useCreateCharStore.getState()
+    const images = [...pendingImageUpdates.values()]
+    pendingImageUpdates.clear()
+    void window.lovemi
+      ?.createCharStateSave?.({
+        state: buildPersistedState(latest, true) as unknown as Record<string, unknown>,
+        imageUpdates: images,
+      })
+      .catch(() => {
+        // SQLite 暂时不可用时仍保留 localStorage 瘦身备份。
+        for (const update of images) pendingImageUpdates.set(update.slot, update)
+      })
+  }, 250)
+}
+
+function scheduleSave(
+  s: CreateCharState,
+  imageUpdate?: { slot: CreateCharSlotId; mimeType: string; imageBase64: string | null },
+) {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => savePersisted(s), 400)
+  scheduleSqliteSave(imageUpdate)
 }
 
 function applyPortraitSync(partial: Partial<CreateCharSlotDraft>) {
@@ -372,12 +468,19 @@ function applyPortraitSync(partial: Partial<CreateCharSlotDraft>) {
   if (typeof partial.portraitUrl === 'string' && partial.portraitUrl.startsWith('http')) {
     next.portraitCdnUrl = partial.portraitUrl
   }
+  if (
+    typeof partial.portraitUrl === 'string' &&
+    partial.portraitUrl.startsWith('lovemi-cache://')
+  ) {
+    next.portraitCacheUrl = partial.portraitUrl
+  }
   if (typeof partial.portraitCdnUrl === 'string' && partial.portraitCdnUrl.startsWith('http')) {
     // 保留 CDN；展示 URL 可以是 cache，但 CDN 不能丢
     next.portraitCdnUrl = partial.portraitCdnUrl
   }
   if (partial.portraitUrl === null) {
     next.portraitCdnUrl = null
+    next.portraitCacheUrl = null
   }
   return next
 }
@@ -412,7 +515,15 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
         slots: { ...s.slots, [slotId]: slotNext },
       }
     })
-    scheduleSave(get())
+    const current = get()
+    const imageUpdate = Object.prototype.hasOwnProperty.call(draft, 'imageBase64')
+      ? {
+          slot: current.activeSlot,
+          mimeType: String(draft.mimeType || current.slots[current.activeSlot].mimeType),
+          imageBase64: typeof draft.imageBase64 === 'string' ? draft.imageBase64 : null,
+        }
+      : undefined
+    scheduleSave(current, imageUpdate)
   },
   patchSlot: (slot, partial) => {
     set((s) => ({
@@ -421,7 +532,15 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
         [slot]: { ...s.slots[slot], ...applyPortraitSync(partial) },
       },
     }))
-    scheduleSave(get())
+    const current = get()
+    const imageUpdate = Object.prototype.hasOwnProperty.call(partial, 'imageBase64')
+      ? {
+          slot,
+          mimeType: String(partial.mimeType || current.slots[slot].mimeType),
+          imageBase64: typeof partial.imageBase64 === 'string' ? partial.imageBase64 : null,
+        }
+      : undefined
+    scheduleSave(current, imageUpdate)
   },
   pushStep: (slot, kind, text) => {
     const entry: CreateCharStep = {
@@ -454,8 +573,22 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
     scheduleSave(get())
   },
   setActiveSlot: (slot) => {
-    set({ activeSlot: slot })
+    set((s) => {
+      const previous = s.activeSlot
+      if (previous === slot) return { activeSlot: slot }
+      const prevDraft = s.slots[previous]
+      if (prevDraft.previewUrl?.startsWith('blob:')) URL.revokeObjectURL(prevDraft.previewUrl)
+      return {
+        activeSlot: slot,
+        // 非当前槽参考图留在 SQLite，不在 Renderer 同时保留 5 份 base64+解码位图。
+        slots: {
+          ...s.slots,
+          [previous]: { ...prevDraft, imageBase64: null, previewUrl: null },
+        },
+      }
+    })
     scheduleSave(get())
+    void hydrateCreateCharSlotImageFromSqlite(slot)
   },
   resetDraft: () =>
     set((s) => {
@@ -468,7 +601,15 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
           [s.activeSlot]: { ...SLOT_DEFAULTS, draftEpoch: epoch },
         },
       }
-      queueMicrotask(() => savePersisted({ ...get(), ...next } as CreateCharState))
+      queueMicrotask(() => {
+        const latest = { ...get(), ...next } as CreateCharState
+        savePersisted(latest)
+        scheduleSqliteSave({
+          slot: s.activeSlot,
+          mimeType: cur.mimeType,
+          imageBase64: null,
+        })
+      })
       return next
     }),
   bumpSlotEpoch: (slot) => {
@@ -489,6 +630,86 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
 
 // 启动即写回瘦身后的草稿，立刻甩掉旧版多槽 imageBase64（否则要等用户再操作才缩 Local Storage）
 queueMicrotask(() => savePersisted(useCreateCharStore.getState()))
+
+function restoredPreviewUrl(imageBase64: string, mimeType: string): string | null {
+  try {
+    const binary = atob(imageBase64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return URL.createObjectURL(new Blob([bytes], { type: mimeType || 'image/png' }))
+  } catch {
+    return null
+  }
+}
+
+async function hydrateCreateCharSlotImageFromSqlite(slot: CreateCharSlotId) {
+  const current = useCreateCharStore.getState().slots[slot]
+  if (current.imageBase64 || !window.lovemi?.createCharStateLoadImage) return
+  try {
+    const loaded = await window.lovemi.createCharStateLoadImage(slot)
+    if (!loaded.ok || !loaded.imageBase64) return
+    const latest = useCreateCharStore.getState()
+    if (latest.activeSlot !== slot || latest.slots[slot].imageBase64) return
+    const mimeType = loaded.mimeType || latest.slots[slot].mimeType
+    useCreateCharStore.setState((state) => ({
+      slots: {
+        ...state.slots,
+        [slot]: {
+          ...state.slots[slot],
+          imageBase64: loaded.imageBase64,
+          mimeType,
+          previewUrl: restoredPreviewUrl(loaded.imageBase64!, mimeType),
+        },
+      },
+    }))
+  } catch {
+    /* 保留无图状态，用户仍可重新粘贴 */
+  }
+}
+
+/** SQLite 是创建角色草稿/队列的权威存储；localStorage 只做轻量兼容备份。 */
+export async function hydrateCreateCharStoreFromSqlite(): Promise<boolean> {
+  if (sqliteHydrated) return true
+  const api = window.lovemi?.createCharStateLoad
+  if (!api) {
+    sqliteHydrated = true
+    return false
+  }
+  try {
+    const loaded = await api()
+    const raw = loaded.state as PersistedV2 | undefined
+    if (loaded.ok && raw?.slots) {
+      const slots = emptySlots()
+      for (const id of CREATE_CHAR_SLOT_IDS) {
+        const image = loaded.images?.[id]
+        const slot = normalizeSqlSlot(raw.slots?.[id])
+        if (image?.imageBase64) {
+          slot.imageBase64 = image.imageBase64
+          slot.mimeType = image.mimeType || slot.mimeType
+          slot.previewUrl = restoredPreviewUrl(image.imageBase64, slot.mimeType)
+        }
+        slots[id] = slot
+      }
+      useCreateCharStore.setState((current) => ({
+        ...current,
+        activeSlot: CREATE_CHAR_SLOT_IDS.includes(raw.activeSlot as CreateCharSlotId)
+          ? (raw.activeSlot as CreateCharSlotId)
+          : current.activeSlot,
+        adminId: raw.adminId || current.adminId,
+        teamoBase: raw.teamoBase || current.teamoBase,
+        teamoModel: raw.teamoModel || current.teamoModel,
+        slots,
+      }))
+    }
+    sqliteHydrated = true
+    scheduleSqliteSave()
+    return Boolean(raw?.slots)
+  } catch {
+    sqliteHydrated = true
+    scheduleSqliteSave()
+    return false
+  }
+}
 
 /** 读当前槽草稿（组件里用） */
 export function selectActiveSlot(s: CreateCharState): CreateCharSlotDraft {

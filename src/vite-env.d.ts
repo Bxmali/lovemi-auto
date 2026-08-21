@@ -212,6 +212,33 @@ interface LovemiBridge {
     adminAccountId: string
     downloadsDir: string
   }>
+  createCharStateLoad: () => Promise<{
+    ok: boolean
+    state?: Record<string, unknown>
+    images?: Record<number, { imageBase64: string; mimeType: string }>
+    updatedAt?: string
+  }>
+  createCharStateLoadImage: (slot: 1 | 2 | 3 | 4 | 5) => Promise<{
+    ok: boolean
+    error?: string
+    imageBase64: string | null
+    mimeType: string | null
+  }>
+  createCharStateSave: (input: {
+    state: Record<string, unknown>
+    imageUpdates?: Array<{ slot: number; mimeType: string; imageBase64: string | null }>
+  }) => Promise<{ ok: boolean; error?: string }>
+  createCharRuntimeState: () => Promise<{
+    ok: boolean
+    runs: Array<{
+      runId: string
+      slot: number
+      epoch: number
+      status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+      stage: string
+      [key: string]: unknown
+    }>
+  }>
   createCharSaveConfig: (input: {
     teamoApiBase?: string
     teamoApiKey?: string

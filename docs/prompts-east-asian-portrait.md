@@ -19,7 +19,7 @@
 | `ancestry_region` | `east_asian` |
 | `ancestry_tags` | 含 `东亚裔`（可加华裔/日系/韩系） |
 | `agent_prompt_settings.language` | **`zh-CN`** |
-| `display_name` | **中文**可爱名（2～3 汉字，避免撞名） |
+| `display_name` | **中文**可爱名（2～3 汉字，避免撞名）；**若用户提示词已写明角色身份（如「黑寡妇」）则必须用该身份，禁止再随机起名** |
 | `appearance_tags` / 性格 / 性癖 / `portrait_prompt` | **中文** |
 
 ### 1.2 必填外观前缀（短但密）
@@ -111,7 +111,7 @@
 | `ancestry_region` | `east_asian` | `western` |
 | `ancestry_tags` | 东亚裔… | **欧洲裔** 等 |
 | `language` | `zh-CN` | **`en-US`** |
-| `display_name` | 中文 2～3 字 | **英文** First 或 First Last（如 `Ava Brooks`） |
+| `display_name` | 中文 2～3 字；提示词已点名则用提示词 | **英文** First / First Last；**提示词已点名（如黑寡妇 / Black Widow）则强覆盖，禁止随机英文名** |
 | `人种` / 东亚锁 | 东亚中日韩 + 禁止欧美五官 | **不要**写东亚锁；锁参考欧美五官身份 |
 | 气质 | 萌妹娇羞粘人 | 写实模特气场，勿刷东亚萌妹词 |
 | `appearance_tags` / 性癖 / `portrait_prompt` | 中文 | **仍可用中文**（工具识图更稳） |
