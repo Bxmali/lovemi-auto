@@ -165,9 +165,18 @@ function assetRecordTime(item: Record<string, unknown>): number {
 }
 
 function isNoRefVideoError(text: string) {
-  return /没有可用于视频生成的参考图|视频暂时无法发送|no .*reference.*(image|asset)|reference image/i.test(
+  return /没有可用于视频生成的参考图|no .*reference.*(image|asset)|reference image/i.test(text)
+}
+
+/** 官方已明确发送失败：立刻停，不要当成「暂时无法发送」无限重试 */
+function isPermanentCompanionSendFailure(text: string) {
+  return /发送失败|send failed|failed to send|无法生成视频|generation failed|content.?policy|moderation|PROMPT_COMPILATION/i.test(
     text,
   )
+}
+
+function isVideoTemporarilyUnavailable(text: string) {
+  return /视频暂时无法发送|temporarily unable to send|video temporarily/i.test(text)
 }
 
 function isVideoStillGenerating(text: string) {
@@ -178,7 +187,8 @@ function isVideoStillGenerating(text: string) {
 
 /** 瞬时错误：应等待/重试，不要立刻放弃整条流水线 */
 function isTransientCompanionError(text: string) {
-  return /still being processed|already (being )?processed|in progress|too many|rate.?limit|429|502|503|504|timeout|ETIMEDOUT|ECONNRESET|fetch failed|socket|temporarily|busy|try again|请稍后再试|稍后重试/i.test(
+  if (isPermanentCompanionSendFailure(text)) return false
+  return /still being processed|already (being )?processed|in progress|too many|rate.?limit|429|502|503|504|timeout|ETIMEDOUT|ECONNRESET|fetch failed|socket|temporarily|busy|try again|请稍后再试|稍后重试|视频暂时无法发送/i.test(
     text,
   )
 }
@@ -489,9 +499,26 @@ export async function requestCompanionMotionVideo(input: {
     if (!msg.ok) {
       const errText = msg.error || JSON.stringify(msg.data)
       lastFailReason = errText
+      if (isPermanentCompanionSendFailure(errText)) {
+        appendConsoleLog({
+          level: 'error',
+          action: 'create_char',
+          message: `companion 官方发送失败，停止重试 · ${input.characterId.slice(0, 18)} · ${errText.slice(0, 120)}`,
+        })
+        return {
+          ok: false,
+          error: `官方发送失败：${msg.error || '视频发送失败'}`,
+          labProjectId: labId,
+          coverAssetId: prepared.coverAssetId,
+        }
+      }
+      // 「视频暂时无法发送」最多再试 1 次；官方已失败时不要空转十几分钟
+      const tempUnavailable = isVideoTemporarilyUnavailable(errText)
       const canRetry =
         attempt < maxAttempts &&
-        (isNoRefVideoError(errText) || isTransientCompanionError(errText))
+        (isNoRefVideoError(errText) ||
+          isTransientCompanionError(errText) ||
+          (tempUnavailable && attempt < 2))
       if (canRetry) {
         // still being processed：先耐心等视频，不要立刻再 POST 刷消息
         if (isTransientCompanionError(errText) && !isNoRefVideoError(errText)) {
@@ -664,11 +691,27 @@ export async function requestCompanionMotionVideo(input: {
         collectJobs(thread.data)
         const threadText = JSON.stringify(thread.data)
         lastThreadHint = threadText.slice(0, 200)
-        if (isNoRefVideoError(threadText)) {
+        if (isPermanentCompanionSendFailure(threadText) && !isVideoStillGenerating(threadText)) {
+          appendConsoleLog({
+            level: 'error',
+            action: 'create_char',
+            message: `companion 线程显示发送失败，停止等待 · ${input.characterId.slice(0, 18)}`,
+          })
+          return {
+            ok: false,
+            error: '官方显示视频发送失败，已停止重试',
+            labProjectId: labId,
+            coverAssetId: prepared.coverAssetId,
+            jobIds: [...jobIds],
+          }
+        }
+        if (isNoRefVideoError(threadText) || isVideoTemporarilyUnavailable(threadText)) {
           // 前 90 秒内继续等（三槽并发时封面同步更慢）
           if (!isVideoStillGenerating(threadText) && elapsed > 90_000) {
             sawNoRefError = true
-            lastFailReason = '没有可用于视频生成的参考图'
+            lastFailReason = isVideoTemporarilyUnavailable(threadText)
+              ? '视频暂时无法发送'
+              : '没有可用于视频生成的参考图'
             break
           }
         }

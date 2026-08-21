@@ -70,6 +70,8 @@ type SharedFields = {
   teamoKeyInput: string
   hasApiKey: boolean
   hasAdminToken: boolean
+  /** 是否自动导出含水印推特资源（默认开） */
+  autoDownloadWatermark: boolean
 }
 
 type CreateCharState = SharedFields & {
@@ -133,6 +135,7 @@ const SHARED_KEYS = new Set([
   'teamoKeyInput',
   'hasApiKey',
   'hasAdminToken',
+  'autoDownloadWatermark',
 ])
 
 function emptySlots(): Record<CreateCharSlotId, CreateCharSlotDraft> {
@@ -224,6 +227,15 @@ function normalizeSqlSlot(raw: Partial<CreateCharSlotDraft> | undefined): Create
       ? (base.portraitCacheUrl || base.portraitUrl)
       : null
   base.portraitUrl = base.portraitCacheUrl || cdn
+  // SQLite 里的 busy/queue 可能是闪退前残留；真正是否在跑要靠主进程 runtime 再对齐。
+  // 这里先清成 idle，避免「假跑」锁死全自动按钮。
+  base.busy = 'idle'
+  base.waitStartedAt = null
+  base.waitKind = null
+  base.queueStatus = 'idle'
+  base.queuePosition = 0
+  base.runId = ''
+  base.runStartedAt = null
   base.lastResult = scrubHugeText(base.lastResult)
   base.publishResult = scrubHugeText(base.publishResult)
   base.stepLog = Array.isArray(base.stepLog)
@@ -497,6 +509,7 @@ export const useCreateCharStore = create<CreateCharState>((set, get) => ({
   teamoKeyInput: '',
   hasApiKey: false,
   hasAdminToken: false,
+  autoDownloadWatermark: true,
   activeSlot: 1,
   slots: emptySlots(),
   ...hydrated,
@@ -676,17 +689,37 @@ export async function hydrateCreateCharStoreFromSqlite(): Promise<boolean> {
     return false
   }
   try {
+    const before = useCreateCharStore.getState()
     const loaded = await api()
     const raw = loaded.state as PersistedV2 | undefined
     if (loaded.ok && raw?.slots) {
       const slots = emptySlots()
+      const imageUpdates: Array<{
+        slot: CreateCharSlotId
+        mimeType: string
+        imageBase64: string | null
+      }> = []
       for (const id of CREATE_CHAR_SLOT_IDS) {
         const image = loaded.images?.[id]
         const slot = normalizeSqlSlot(raw.slots?.[id])
+        const prev = before.slots[id]
         if (image?.imageBase64) {
           slot.imageBase64 = image.imageBase64
           slot.mimeType = image.mimeType || slot.mimeType
           slot.previewUrl = restoredPreviewUrl(image.imageBase64, slot.mimeType)
+        } else if (prev?.imageBase64) {
+          // 水合前刚粘贴、DB 还没写上：保留内存图并补写 SQLite，防止闪退后参考图蒸发。
+          slot.imageBase64 = prev.imageBase64
+          slot.mimeType = prev.mimeType || slot.mimeType
+          slot.previewUrl =
+            prev.previewUrl?.startsWith('blob:')
+              ? prev.previewUrl
+              : restoredPreviewUrl(prev.imageBase64, slot.mimeType)
+          imageUpdates.push({
+            slot: id,
+            mimeType: slot.mimeType,
+            imageBase64: prev.imageBase64,
+          })
         }
         slots[id] = slot
       }
@@ -700,10 +733,14 @@ export async function hydrateCreateCharStoreFromSqlite(): Promise<boolean> {
         teamoModel: raw.teamoModel || current.teamoModel,
         slots,
       }))
+      sqliteHydrated = true
+      for (const update of imageUpdates) scheduleSqliteSave(update)
+      scheduleSqliteSave()
+      return true
     }
     sqliteHydrated = true
     scheduleSqliteSave()
-    return Boolean(raw?.slots)
+    return false
   } catch {
     sqliteHydrated = true
     scheduleSqliteSave()

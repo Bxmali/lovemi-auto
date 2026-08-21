@@ -231,6 +231,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
+      autoDownloadWatermark: boolean
     }>,
   createCharStateLoad: () =>
     ipcRenderer.invoke('createChar:stateLoad') as Promise<{
@@ -274,6 +275,7 @@ contextBridge.exposeInMainWorld('lovemi', {
     adminEmailLocal?: string
     adminAccountId?: string
     downloadsDir?: string
+    autoDownloadWatermark?: boolean
   }) =>
     ipcRenderer.invoke('createChar:saveConfig', input) as Promise<{
       teamoApiBase: string
@@ -283,6 +285,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
+      autoDownloadWatermark: boolean
     }>,
   createCharPickDownloadsDir: () =>
     ipcRenderer.invoke('createChar:pickDownloadsDir') as Promise<{
@@ -294,6 +297,7 @@ contextBridge.exposeInMainWorld('lovemi', {
       adminEmailLocal: string
       adminAccountId: string
       downloadsDir: string
+      autoDownloadWatermark: boolean
       defaultDownloadsDir: string
     }>,
   createCharAnalyze: (input: {

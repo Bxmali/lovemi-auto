@@ -172,6 +172,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   const slots = useCreateCharStore((s) => s.slots)
   const adminTokenInput = useCreateCharStore((s) => s.adminTokenInput)
   const downloadsDir = useCreateCharStore((s) => s.downloadsDir)
+  const autoDownloadWatermark = useCreateCharStore((s) => s.autoDownloadWatermark)
   const teamoBase = useCreateCharStore((s) => s.teamoBase)
   const teamoModel = useCreateCharStore((s) => s.teamoModel)
   const teamoKeyInput = useCreateCharStore((s) => s.teamoKeyInput)
@@ -232,8 +233,31 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       await hydrateCreateCharStoreFromSqlite()
       if (cancelled) return
       const runtime = await window.lovemi?.createCharRuntimeState?.()
-      if (cancelled || !runtime?.ok) return
-      for (const run of runtime.runs || []) {
+      if (cancelled) return
+      const liveRuns = (runtime?.ok ? runtime.runs : []).filter(
+        (run) => run.status === 'queued' || run.status === 'running',
+      )
+      const liveBySlot = new Map<number, (typeof liveRuns)[number]>()
+      for (const run of liveRuns) liveBySlot.set(Number(run.slot), run)
+
+      // 先清掉 SQLite/内存里的假忙状态，只保留主进程确认仍在跑的槽。
+      for (const slot of CREATE_CHAR_SLOT_IDS) {
+        const live = liveBySlot.get(slot)
+        if (live) continue
+        const cur = useCreateCharStore.getState().slots[slot]
+        if (cur.busy === 'idle' && cur.queueStatus === 'idle' && !cur.waitStartedAt) continue
+        patchSlot(slot, {
+          busy: 'idle',
+          queueStatus: 'idle',
+          queuePosition: 0,
+          waitStartedAt: null,
+          waitKind: null,
+          runId: '',
+          runStartedAt: null,
+        })
+      }
+
+      for (const run of runtime?.ok ? runtime.runs || [] : []) {
         const slot = Number(run.slot) as CreateCharSlotId
         if (!CREATE_CHAR_SLOT_IDS.includes(slot)) continue
         const cur = useCreateCharStore.getState().slots[slot]
@@ -242,16 +266,24 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         const characterId = typeof run.characterId === 'string' ? run.characterId : ''
         const portraitCdnUrl = typeof run.portraitCdnUrl === 'string' ? run.portraitCdnUrl : ''
         const live = run.status === 'queued' || run.status === 'running'
+        if (!live && run.status !== 'interrupted') continue
         const patch: Parameters<typeof patchSlot>[1] = {
-          runId: run.runId,
+          runId: live ? run.runId : '',
           draftEpoch: Number(run.epoch || cur.draftEpoch),
           queueStatus: run.status === 'queued' ? 'queued' : run.status === 'running' ? 'running' : 'idle',
           queuePosition: run.status === 'queued' ? Math.max(1, Number(run.queuePosition || 1)) : 0,
           busy: live ? 'auto' : 'idle',
           waitKind: live ? 'publish' : null,
-          runStartedAt: typeof run.runStartedAt === 'number' ? run.runStartedAt : cur.runStartedAt,
-          waitStartedAt:
-            live && typeof run.runStartedAt === 'number' ? run.runStartedAt : live ? Date.now() : null,
+          runStartedAt: live
+            ? typeof run.runStartedAt === 'number'
+              ? run.runStartedAt
+              : Date.now()
+            : null,
+          waitStartedAt: live
+            ? typeof run.runStartedAt === 'number'
+              ? run.runStartedAt
+              : Date.now()
+            : null,
         }
         if (run.payload && typeof run.payload === 'object') {
           patch.payloadText = JSON.stringify(run.payload, null, 2)
@@ -276,8 +308,27 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
           const latest = useCreateCharStore.getState().slots[slot]
           const text = characterId
             ? '上次 App 进程中断，已恢复角色现场；将从站内资产继续拉取，不会重新创建角色'
-            : '上次 App 进程中断，已恢复参考图与参数；未重复提交创建请求'
+            : '上次 App 进程中断，已恢复参数；参考图若缺失请重新粘贴'
           if (!latest.stepLog.some((entry) => entry.text === text)) pushStepUnique(slot, 'err', text)
+        }
+      }
+
+      // 当前槽若仍无参考图，再按需拉一次（兼容旧库只存了部分槽）。
+      const active = useCreateCharStore.getState().activeSlot
+      const activeDraft = useCreateCharStore.getState().slots[active]
+      if (!activeDraft.imageBase64) {
+        const loaded = await window.lovemi?.createCharStateLoadImage?.(active)
+        if (!cancelled && loaded?.ok && loaded.imageBase64) {
+          patchSlot(active, {
+            imageBase64: loaded.imageBase64,
+            mimeType: loaded.mimeType || activeDraft.mimeType,
+            previewUrl: URL.createObjectURL(
+              new Blob(
+                [Uint8Array.from(atob(loaded.imageBase64), (c) => c.charCodeAt(0))],
+                { type: loaded.mimeType || 'image/png' },
+              ),
+            ),
+          })
         }
       }
     })()
@@ -351,9 +402,6 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
   )
   const fullAutoQueueBusy = CREATE_CHAR_SLOT_IDS.some(
     (id) => slots[id].queueStatus !== 'idle',
-  )
-  const manualOperationBusy = CREATE_CHAR_SLOT_IDS.some(
-    (id) => slots[id].queueStatus === 'idle' && slots[id].busy !== 'idle',
   )
   useEffect(() => {
     if (!active || !anySlotWaiting) return
@@ -440,9 +488,19 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       if (expectedRunId && current.runId !== expectedRunId) return false
       if (res.ok && res.cacheUrl) {
         write({ motionPreviewUrl: res.cacheUrl })
-        pushStepUnique(slotId, 'ok', '视频预览缓存已完成')
-        setToast(res.twitterPath ? `槽${slotId}：视频已存推特资源` : `槽${slotId}：视频预览已就绪`)
-        return Boolean(res.twitterPath)
+        const wantTwitter = useCreateCharStore.getState().autoDownloadWatermark !== false
+        if (res.twitterPath) {
+          pushStepUnique(slotId, 'ok', '视频已存推特资源（含水印）')
+          setToast(`槽${slotId}：视频已存推特资源`)
+          return true
+        }
+        pushStepUnique(slotId, 'ok', wantTwitter ? '视频预览已缓存' : '视频预览已缓存 · 未导出推特水印')
+        setToast(
+          wantTwitter
+            ? `槽${slotId}：视频预览已就绪`
+            : `槽${slotId}：视频预览已就绪（水印导出已关）`,
+        )
+        return !wantTwitter
       } else {
         write({ motionPreviewUrl: cdnOrUrl })
         setToast(res.error || '视频缓存失败，尝试直链播放')
@@ -531,8 +589,13 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
             setToast(`槽${slotId}：立绘已存推特资源 · ${name}`)
             return true
           } else {
-            pushStepUnique(slotId, 'ok', '立绘预览已缓存')
-            return false
+            const wantTwitter = useCreateCharStore.getState().autoDownloadWatermark !== false
+            pushStepUnique(
+              slotId,
+              'ok',
+              wantTwitter ? '立绘预览已缓存' : '立绘预览已缓存 · 未导出推特水印',
+            )
+            return !wantTwitter
           }
         }
 
@@ -794,6 +857,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
         downloadsDir: cfg.downloadsDir || '',
+        autoDownloadWatermark: cfg.autoDownloadWatermark !== false,
       })
     })()
   }, [patch])
@@ -988,9 +1052,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
       teamoApiKey?: string
       adminSessionToken?: string
       downloadsDir?: string
+      autoDownloadWatermark?: boolean
     } = {
       teamoApiBase: teamoBase.trim(),
       teamoModel: teamoModel.trim() || 'gpt-5.4-mini',
+      autoDownloadWatermark,
     }
     if (teamoKeyInput.trim()) savePatch.teamoApiKey = teamoKeyInput.trim()
     if (adminTokenInput.trim()) savePatch.adminSessionToken = adminTokenInput.trim()
@@ -1001,6 +1067,7 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         hasApiKey: cfg.hasApiKey,
         hasAdminToken: cfg.hasAdminToken,
         downloadsDir: cfg.downloadsDir || '',
+        autoDownloadWatermark: cfg.autoDownloadWatermark !== false,
         teamoKeyInput: '',
         adminTokenInput: '',
       })
@@ -1558,7 +1625,11 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
         `自动视频并发布已完成 · ${name}${res.listingId ? ` · ${res.listingId}` : ''}`,
       )
       setToast(
-        `【槽${slot} 成功】${name} 视频已生成并提交发布${res.listingId ? ` · ${res.listingId}` : ''} · 预览已回填，推特资源文件夹也会存一份`,
+        `【槽${slot} 成功】${name} 视频已生成并提交发布${res.listingId ? ` · ${res.listingId}` : ''} · 预览已回填${
+          useCreateCharStore.getState().autoDownloadWatermark !== false
+            ? '，推特资源文件夹也会存一份'
+            : '（水印导出已关）'
+        }`,
         16000,
       )
     } finally {
@@ -1568,9 +1639,28 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
     }
   }
 
+  const onStopOrUnlockSlot = async () => {
+    const slot = activeSlot
+    const cur = useCreateCharStore.getState().slots[slot]
+    if (cur.runId) {
+      await window.lovemi?.createCharCancelFullAuto?.({ runId: cur.runId })
+    }
+    patchSlot(slot, {
+      busy: 'idle',
+      queueStatus: 'idle',
+      queuePosition: 0,
+      waitStartedAt: null,
+      waitKind: null,
+      runId: '',
+      runStartedAt: null,
+    })
+    pushStepUnique(slot, 'err', '已停止/解锁本槽 · 可重新全自动（不会自动重跑）')
+    setToast(`槽${slot}：已解锁，可重新点全自动`)
+  }
+
   const onFullAutoPublish = async () => {
     if (!imageBase64) {
-      setToast('先 Ctrl+V 粘贴参考图')
+      setToast('先 Ctrl+V 粘贴参考图（闪退后若本槽无图，请重新粘贴一次）')
       return
     }
     if (!window.lovemi?.createCharFullAutoPublish) {
@@ -2019,12 +2109,31 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               选择文件夹
             </button>
           </span>
+          <label className="chip" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={autoDownloadWatermark}
+              onChange={(e) => {
+                const next = e.target.checked
+                patch({ autoDownloadWatermark: next })
+                void window.lovemi?.createCharSaveConfig?.({ autoDownloadWatermark: next }).then((cfg) => {
+                  if (cfg) patch({ autoDownloadWatermark: cfg.autoDownloadWatermark !== false })
+                })
+                setToast(next ? '已开启：自动下载带水印推特资源' : '已关闭：只缓存预览，不导出推特水印')
+              }}
+              style={{ marginRight: 6 }}
+            />
+            自动下载带水印
+          </label>
         </div>
         <div className="settings-hint" style={{ marginTop: 8 }}>
           创建归属：{hasAdminToken ? '本机加密保存的管理员 Bearer' : '尚未保存管理员 Bearer'}
           {' · '}
           {hasApiKey ? 'API Key OK' : '请填写 API Key'}
-          。立绘/视频会写入所选目录下的「推特资源」。
+          。
+          {autoDownloadWatermark
+            ? '立绘/视频会写入所选目录下的「推特资源」（含水印）。'
+            : '已关闭水印导出：只做本地预览缓存，不写入「推特资源」。'}
         </div>
       </div>
 
@@ -2222,15 +2331,25 @@ export function CreateCharacterPage({ active }: { active: boolean }) {
               type="button"
               className="btn"
               style={{ fontSize: 12, opacity: 0.95 }}
-              disabled={busy !== 'idle' || manualOperationBusy || !imageBase64}
+              disabled={busy !== 'idle' || queueStatus !== 'idle' || !imageBase64}
               onClick={() => void onFullAutoPublish()}
-              title="参考图+提示词 → JSON → 立绘 → 视频 → 绑定 → 发布"
+              title="参考图+提示词 → JSON → 立绘 → 视频 → 绑定 → 发布；其他槽运行时可继续加入串行队列"
             >
               {queueStatus === 'queued'
                 ? `排队中（第 ${queuePosition || 1} 位）`
                 : queueStatus === 'running'
                   ? '全自动进行中…'
                   : '全自动到发布'}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              style={{ fontSize: 12 }}
+              disabled={busy === 'idle' && queueStatus === 'idle' && !waitStartedAt}
+              onClick={() => void onStopOrUnlockSlot()}
+              title="停止本槽假跑/真跑并解锁。官方已发送失败或按钮点不了时点这里"
+            >
+              停止/解锁
             </button>
           </div>
           {createdCharacterId ? (

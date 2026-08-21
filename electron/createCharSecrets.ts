@@ -12,12 +12,15 @@ export type CreateCharSecrets = {
   adminAccountId?: string
   /** 推特资源父目录；其下自动建「推特资源」。空=系统 Downloads */
   downloadsDir?: string
+  /** 立绘/视频缓存成功后，是否自动导出含水印的「推特资源」 */
+  autoDownloadWatermark?: boolean
 }
 
 const DEFAULTS: CreateCharSecrets = {
   teamoApiBase: 'https://api.teamorouter.com/v1',
   teamoApiKey: '',
   teamoModel: 'gpt-5.4-mini',
+  autoDownloadWatermark: true,
 }
 
 function secretsPath() {
@@ -68,5 +71,6 @@ export function createCharConfigPublic() {
     adminEmailLocal: s.adminEmailLocal || '',
     adminAccountId: s.adminAccountId || '',
     downloadsDir: (s.downloadsDir || '').trim(),
+    autoDownloadWatermark: s.autoDownloadWatermark !== false,
   }
 }

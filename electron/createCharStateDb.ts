@@ -75,16 +75,13 @@ export function loadCreateCharUiState() {
     }
   }
   const images: Record<number, { imageBase64: string; mimeType: string }> = {}
-  const activeSlot =
-    typeof state?.activeSlot === 'number' && state.activeSlot >= 1 && state.activeSlot <= 5
-      ? state.activeSlot
-      : 1
+  // 闪退后要能恢复每一槽参考图；体积可控时一次读齐，避免只恢复 activeSlot。
   const imageRows = db
     .prepare(
       `SELECT slot, mime_type, image_data FROM create_char_reference_images
-       WHERE image_data IS NOT NULL AND slot = ?`,
+       WHERE image_data IS NOT NULL`,
     )
-    .all(activeSlot) as Array<{ slot: number; mime_type: string; image_data: Uint8Array }>
+    .all() as Array<{ slot: number; mime_type: string; image_data: Uint8Array }>
   for (const image of imageRows) {
     images[image.slot] = {
       mimeType: image.mime_type || 'image/png',

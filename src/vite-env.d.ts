@@ -211,6 +211,7 @@ interface LovemiBridge {
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
+    autoDownloadWatermark: boolean
   }>
   createCharStateLoad: () => Promise<{
     ok: boolean
@@ -247,6 +248,7 @@ interface LovemiBridge {
     adminEmailLocal?: string
     adminAccountId?: string
     downloadsDir?: string
+    autoDownloadWatermark?: boolean
   }) => Promise<{
     teamoApiBase: string
     teamoModel: string
@@ -255,6 +257,7 @@ interface LovemiBridge {
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
+    autoDownloadWatermark: boolean
   }>
   createCharPickDownloadsDir: () => Promise<{
     ok: boolean
@@ -265,6 +268,7 @@ interface LovemiBridge {
     adminEmailLocal: string
     adminAccountId: string
     downloadsDir: string
+    autoDownloadWatermark: boolean
     defaultDownloadsDir: string
   }>
   createCharAnalyze: (input: {

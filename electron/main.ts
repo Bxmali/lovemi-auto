@@ -561,6 +561,7 @@ ipcMain.handle(
       adminEmailLocal?: string
       adminAccountId?: string
       downloadsDir?: string
+      autoDownloadWatermark?: boolean
     },
   ) => {
     const patch = { ...(input || {}) } as Partial<CreateCharSecrets>
@@ -570,6 +571,9 @@ ipcMain.handle(
     }
     if (typeof patch.downloadsDir === 'string') {
       patch.downloadsDir = patch.downloadsDir.trim()
+    }
+    if (typeof patch.autoDownloadWatermark === 'boolean') {
+      patch.autoDownloadWatermark = patch.autoDownloadWatermark
     }
     saveCreateCharSecrets(patch)
     return createCharConfigPublic()
@@ -1205,12 +1209,14 @@ ipcMain.handle(
   ) => {
     if (!input.proxyUrl) return { ok: false, error: '未配置出站代理（禁止直连）' }
     if (!input.cdnUrl) return { ok: false, error: '缺少 cdnUrl' }
+    const exportWatermark = loadCreateCharSecrets().autoDownloadWatermark !== false
+    const displayName = input.displayName?.trim() || undefined
     return cacheLovemiCdnMedia({
       cdnUrl: input.cdnUrl,
       proxyUrl: input.proxyUrl,
       appData: APP_DATA,
-      saveDisplayName: input.displayName?.trim() || undefined,
-      downloadsPath: resolveTwitterDownloadsParent(),
+      saveDisplayName: exportWatermark ? displayName : undefined,
+      downloadsPath: exportWatermark ? resolveTwitterDownloadsParent() : undefined,
       kind: input.kind || 'media',
       characterId: input.characterId,
       assetId: input.assetId,
