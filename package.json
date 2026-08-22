@@ -2,8 +2,8 @@
   "name": "lovemi-auto",
   "private": true,
   "version": "0.2.0",
-  "productName": "Sidbear Auto",
-  "description": "Sidbear 专属自动化平台",
+  "productName": "Lovemi Auto",
+  "description": "Lovemi 专属自动化平台",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {

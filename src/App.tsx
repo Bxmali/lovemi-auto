@@ -310,10 +310,10 @@ export default function App() {
           type="button"
           className="brand brand-unlock"
           onPointerDown={onBrandActivate}
-          aria-label="Sidbear 专属自动化平台"
+          aria-label="Lovemi Auto"
         >
           <div className="brand-mark">
-            Sidbear
+            Lovemi <span>Auto</span>
           </div>
           <div className="brand-sub">专属自动化平台</div>
         </button>

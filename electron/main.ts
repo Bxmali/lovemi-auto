@@ -163,7 +163,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: '#0b0b0d',
-    title: 'Sidbear 专属自动化平台',
+    title: 'Lovemi Auto',
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,
