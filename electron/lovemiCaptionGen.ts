@@ -480,6 +480,10 @@ export async function generateSocialCaption(input: {
   userHint?: string
   /** standard=完整社群长文；twitterComment=浓缩诱惑推特评论 */
   style?: CaptionStyle
+  /** 可中断（群发取消） */
+  signal?: AbortSignal
+  /** 默认 180s；群发可缩短 */
+  timeoutMs?: number
 }): Promise<{
   ok: boolean
   error?: string
@@ -496,6 +500,7 @@ export async function generateSocialCaption(input: {
   if (!input.proxyUrl) return { ok: false, error: '未配置出站代理' }
   const images = (input.images || []).filter((x) => x?.base64)
   if (!images.length) return { ok: false, error: '请先粘贴图片或视频' }
+  if (input.signal?.aborted) return { ok: false, error: '任务已取消' }
 
   const style: CaptionStyle = input.style === 'twitterComment' ? 'twitterComment' : 'standard'
   const ownerName = pickOwnerName()
@@ -538,12 +543,18 @@ export async function generateSocialCaption(input: {
     })
   }
 
+  const timeoutMs = Math.max(15_000, input.timeoutMs ?? 180_000)
+  const timeoutCtrl = AbortSignal.timeout(timeoutMs)
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, timeoutCtrl])
+    : timeoutCtrl
+
   try {
     const res = await undiciFetch(url, {
       method: 'POST',
       headers: teamoHeaders(secrets.teamoApiKey),
       dispatcher: dispatcherFor(input.proxyUrl, url),
-      signal: AbortSignal.timeout(180_000),
+      signal,
       body: JSON.stringify({
         model: secrets.teamoModel || 'gpt-5.4-mini',
         temperature: style === 'twitterComment' ? 1.05 : 0.85,
@@ -609,6 +620,12 @@ export async function generateSocialCaption(input: {
       kinkLabel: pickedKink?.label,
     }
   } catch (err) {
+    if (
+      (err instanceof Error && (err.name === 'AbortError' || /aborted|abort/i.test(err.message))) ||
+      input.signal?.aborted
+    ) {
+      return { ok: false, error: '任务已取消' }
+    }
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }

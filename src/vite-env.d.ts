@@ -81,6 +81,48 @@ interface LovemiBridge {
   getAppVersion: () => Promise<string>
   loadAccounts: () => Promise<string | null>
   saveAccounts: (plaintext: string) => Promise<{ ok: boolean; encrypted: boolean; error?: string; count?: number }>
+  clearAllAccounts: () => Promise<{ ok: boolean; cleared?: number; error?: string }>
+  demoVerifyUnlock: (password: string) => Promise<{ ok: boolean }>
+  realRegisterProbe: (input: {
+    proxyUrl: string
+    localUpstream?: { host?: string; ports?: number[] }
+  }) => Promise<{ ok: boolean; ip?: string; error?: string; localUpstreamUrl?: string }>
+  realRegisterRunOne: (input: {
+    email: string
+    emailPassword: string
+    refreshToken: string
+    clientId: string
+    proxyUrl: string
+    proxyHost: string
+    region?: string
+    localUpstream?: { host?: string; ports?: number[] }
+  }) => Promise<{
+    ok: boolean
+    email: string
+    error?: string
+    stage?: string
+    egressIp?: string
+    reclaimed?: boolean
+    accountId?: string
+    lovemiPassword?: string
+    sessionToken?: string
+    userId?: string
+    displayName?: string
+  }>
+  realRegisterCancel: () => Promise<{ ok: boolean }>
+  realRegisterResetCancel: () => Promise<{ ok: boolean }>
+  realRegisterLoadEmailPool: (customPath?: string) => Promise<{
+    ok: boolean
+    path: string
+    total: number
+    excluded: number
+    available: number
+    badLines: number
+    accounts: Array<{ email: string; password?: string; refreshToken?: string; clientId?: string }>
+    error?: string
+  }>
+  realRegisterDefaultEmailPoolPath: () => Promise<string>
+  realRegisterPickEmailPool: () => Promise<{ ok: boolean; canceled?: boolean; path?: string }>
   probeAccount: (input: ProbeInput) => Promise<ProbeResult>
   probeBatch: (inputs: ProbeInput[]) => Promise<ProbeResult[]>
   registerLovemi: (input: RegisterInput) => Promise<RegisterResult>

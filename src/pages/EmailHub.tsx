@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, memo } from 'react'
 import gsap from 'gsap'
-import { parseAccountLines, maskSecret } from '../lib/parseAccounts'
+import { parseAccountLines } from '../lib/parseAccounts'
+import { CredentialField } from '../components/CredentialField'
 import { filterAccounts, useEmailStore } from '../store/emailStore'
 import { resolveOutboundProxy, useSettingsStore } from '../store/settingsStore'
 import { runEmailPageEnter, pulseCodeReveal, prefersReducedMotion } from '../motion/timelines'
@@ -115,6 +116,8 @@ function ImportModal({
   )
 }
 
+const SHOW_SECRETS_KEY = 'lovemi.emailHub.showSecrets'
+
 function DetailDrawer({
   account,
   onClose,
@@ -126,6 +129,25 @@ function DetailDrawer({
   const remove = useEmailStore((s) => s.remove)
   const codeRef = useRef<HTMLDivElement>(null)
   const [code, setCode] = useState<string | null>(null)
+  const [showSecrets, setShowSecrets] = useState(() => {
+    try {
+      return localStorage.getItem(SHOW_SECRETS_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+
+  const toggleSecrets = () => {
+    setShowSecrets((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(SHOW_SECRETS_KEY, next ? '1' : '0')
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
+  }
 
   useEffect(() => {
     if (!account || prefersReducedMotion()) return
@@ -173,18 +195,31 @@ function DetailDrawer({
         ) : null}
 
         <div className="section">
-          <h3>凭证</h3>
+          <div className="section-head-row">
+            <h3>凭证</h3>
+            <button type="button" className="btn btn-ghost btn-xs" onClick={toggleSecrets}>
+              {showSecrets ? '隐藏敏感内容' : '显示完整凭证'}
+            </button>
+          </div>
           <dl className="kv">
             <dt>协议</dt>
             <dd>{AUTH_LABEL[account.authMode]}</dd>
             <dt>密码</dt>
-            <dd>{maskSecret(account.password)}</dd>
+            <dd>
+              <CredentialField label="密码" value={account.password} revealed={showSecrets} />
+            </dd>
             <dt>刷新令牌</dt>
-            <dd>{maskSecret(account.refreshToken)}</dd>
+            <dd>
+              <CredentialField label="刷新令牌" value={account.refreshToken} revealed={showSecrets} />
+            </dd>
             <dt>客户端 ID</dt>
-            <dd>{maskSecret(account.clientId)}</dd>
+            <dd>
+              <CredentialField label="客户端 ID" value={account.clientId} revealed={showSecrets} />
+            </dd>
             <dt>Lovemi Bearer</dt>
-            <dd>{maskSecret(account.lovemiSessionToken)}</dd>
+            <dd>
+              <CredentialField label="Lovemi Bearer" value={account.lovemiSessionToken} revealed={showSecrets} />
+            </dd>
           </dl>
         </div>
 
@@ -295,6 +330,8 @@ export function EmailHub() {
   const setStatusFilter = useEmailStore((s) => s.setStatusFilter)
   const setView = useEmailStore((s) => s.setView)
   const select = useEmailStore((s) => s.select)
+  const clearAll = useEmailStore((s) => s.clearAll)
+  const setToast = useEmailStore((s) => s.setToast)
   const settings = useSettingsStore()
   const outbound = resolveOutboundProxy(settings)
   const list = useMemo(() => filterAccounts(accounts, query, statusFilter), [accounts, query, statusFilter])
@@ -343,6 +380,21 @@ export function EmailHub() {
         <button type="button" className="btn btn-primary" onClick={() => setImportOpen(true)}>
           导入账号
         </button>
+        {accounts.length > 0 ? (
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              if (!window.confirm(`确定清空全部 ${accounts.length} 条邮箱？此操作不可恢复。`)) return
+              void clearAll().then((res) => {
+                if (res.ok) setToast(`已清空 ${res.cleared ?? accounts.length} 条`)
+                else setToast(res.error || '清空失败')
+              })
+            }}
+          >
+            清空全部
+          </button>
+        ) : null}
         <div className="stats">
           显示 {list.length} / 共 {accounts.length}
         </div>

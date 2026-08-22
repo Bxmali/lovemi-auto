@@ -1,5 +1,6 @@
 import { fetch as undiciFetch } from 'undici'
 import { acquireAccessToken, dispatcherFor } from './mailProbe'
+import { headersFromProfile, type RegisterHttpProfile } from './registerFingerprint'
 
 const API_BASE = 'https://api.lovemi.ai'
 
@@ -9,6 +10,7 @@ export type LoginInput = {
   refreshToken?: string
   clientId?: string
   proxyUrl?: string
+  httpProfile?: RegisterHttpProfile
 }
 
 export type LoginResult = {
@@ -30,13 +32,13 @@ async function apiPost(
   body: Record<string, unknown>,
   proxyUrl?: string,
   bearer?: string,
+  httpProfile?: RegisterHttpProfile,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; error?: string }> {
   const url = `${API_BASE}${path}`
   try {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'Accept-Language': 'zh-CN',
+      ...headersFromProfile(httpProfile),
     }
     if (bearer) headers.Authorization = `Bearer ${bearer}`
     const res = await undiciFetch(url, {
@@ -71,12 +73,12 @@ async function apiGet(
   path: string,
   proxyUrl?: string,
   bearer?: string,
+  httpProfile?: RegisterHttpProfile,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; error?: string }> {
   const url = `${API_BASE}${path}`
   try {
     const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'Accept-Language': 'zh-CN',
+      ...headersFromProfile(httpProfile),
     }
     if (bearer) headers.Authorization = `Bearer ${bearer}`
     const res = await undiciFetch(url, {
@@ -182,6 +184,8 @@ export async function loginLovemiPassword(input: LoginInput): Promise<LoginResul
     '/v1/auth/password/sign-in',
     { email, password: input.password },
     input.proxyUrl,
+    undefined,
+    input.httpProfile,
   )
   if (!res.ok) return { ok: false, email, error: `登录失败: ${res.error}` }
   return sessionFrom(res.data, email, 'password')

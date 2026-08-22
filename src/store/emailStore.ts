@@ -67,6 +67,7 @@ interface EmailState {
   importRows: (rows: ParsedImportLine[]) => { count: number; ids: string[] }
   remove: (ids: string[]) => void
   clearDemo: () => void
+  clearAll: () => Promise<{ ok: boolean; cleared?: number; error?: string }>
   setStatus: (id: string, status: AccountStatus) => void
   markProbing: (ids: string[]) => void
   applyProbes: (results: ProbePatch[]) => { ok: number; fail: number }
@@ -167,6 +168,26 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       userMutated: true,
       selectedId: null,
     })
+  },
+  clearAll: async () => {
+    if (!window.lovemi?.clearAllAccounts) {
+      return { ok: false, error: '当前环境无法清空库存' }
+    }
+    get().setSuspendPersist(true)
+    try {
+      const res = await window.lovemi.clearAllAccounts()
+      if (!res.ok) return res
+      set({
+        accounts: [],
+        selectedId: null,
+        userMutated: false,
+        query: '',
+        statusFilter: 'all',
+      })
+      return res
+    } finally {
+      window.setTimeout(() => get().setSuspendPersist(false), 1500)
+    }
   },
   setStatus: (id, status) =>
     set({

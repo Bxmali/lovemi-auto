@@ -34,6 +34,11 @@ export interface EmailAccount {
   lovemiDisplayName?: string
   /** 是否已完成语言分配 + 改名 */
   lovemiProfileReady?: boolean
+  /** 真实注册：所用静态住宅代理 */
+  registerProxyUrl?: string
+  registerEgressIp?: string
+  registerFingerprint?: string
+  registerSource?: 'batch' | 'real'
 }
 
 export interface ParsedImportLine {

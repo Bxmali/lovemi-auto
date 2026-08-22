@@ -1,9 +1,9 @@
 {
   "name": "lovemi-auto",
   "private": true,
-  "version": "0.1.9",
-  "productName": "Lovemi Auto",
-  "description": "Lovemi 专属自动化平台",
+  "version": "0.2.0",
+  "productName": "Sidbear Auto",
+  "description": "Sidbear 专属自动化平台",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -37,7 +37,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "${productName}-${version}-win-${arch}.${ext}"
@@ -49,7 +51,9 @@
       "createStartMenuShortcut": true
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     }
   },
@@ -61,6 +65,7 @@
     "electron-builder": "^26.15.3",
     "gsap": "^3.15.0",
     "opencc-js": "^1.4.1",
+    "proxy-chain": "^3.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "undici": "^8.10.0",

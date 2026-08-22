@@ -7,7 +7,7 @@ import { probeAccount, probeAccountsBatch, testProxyConnectivity, type ProbeInpu
 import { registerLovemiAccount, type RegisterInput } from './lovemiRegister'
 import { loginLovemi, fetchLovemiMe, resetLovemiPassword, type LoginInput, type ResetPasswordInput } from './lovemiAuth'
 import { getVlessStatus, resolveMailProxy, stopVlessBridge } from './vless/runner'
-import { closeAccountsDb, loadAccountsJson, saveAccountsJson } from './accountsDb'
+import { clearAllAccounts, closeAccountsDb, loadAccountsJson, saveAccountsJson } from './accountsDb'
 import {
   addCommentTemplate,
   addDisplayName,
@@ -26,6 +26,14 @@ import {
   runEngageStep,
   type EngageAccount,
 } from './consoleDb'
+import {
+  cancelRealRegisterBatch,
+  probeProxyEgress,
+  resetRealRegisterCancel,
+  runRealRegisterTask,
+  type RealRegisterTaskInput,
+} from './realRegister'
+import { defaultEmailPoolPath, loadRealRegisterEmailPool } from './realRegisterPool'
 import { isLocale, type LocaleCode } from './locales'
 import {
   createCharConfigPublic,
@@ -155,7 +163,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: '#0b0b0d',
-    title: 'Lovemi Auto',
+    title: 'Sidbear 专属自动化平台',
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,
@@ -333,6 +341,58 @@ app.on('before-quit', () => {
 ipcMain.handle('accounts:load', () => loadAccountsJson())
 
 ipcMain.handle('accounts:save', (_event, plaintext: string) => saveAccountsJson(plaintext))
+
+ipcMain.handle('accounts:clearAll', () => clearAllAccounts())
+
+const DEMO_UNLOCK_HASH = createHash('sha256').update('Anotherme25').digest('hex')
+
+ipcMain.handle('demo:verifyUnlock', (_event, password: string) => {
+  const hash = createHash('sha256').update(String(password || '')).digest('hex')
+  return { ok: hash === DEMO_UNLOCK_HASH }
+})
+
+ipcMain.handle(
+  'realRegister:probe',
+  async (
+    _event,
+    input: { proxyUrl: string; localUpstream?: { host?: string; ports?: number[] } },
+  ) => {
+    if (!input?.proxyUrl) return { ok: false, error: '缺少代理 URL' }
+    return probeProxyEgress(input.proxyUrl, input.localUpstream)
+  },
+)
+
+ipcMain.handle('realRegister:runOne', async (_event, input: RealRegisterTaskInput) => {
+  if (!input?.proxyUrl) return { ok: false, email: input?.email || '', error: '缺少代理', stage: 'validate' }
+  return runRealRegisterTask(input)
+})
+
+ipcMain.handle('realRegister:cancel', () => {
+  cancelRealRegisterBatch()
+  return { ok: true }
+})
+
+ipcMain.handle('realRegister:resetCancel', () => {
+  resetRealRegisterCancel()
+  return { ok: true }
+})
+
+ipcMain.handle('realRegister:loadEmailPool', (_event, customPath?: string) =>
+  loadRealRegisterEmailPool(customPath),
+)
+
+ipcMain.handle('realRegister:defaultEmailPoolPath', () => defaultEmailPoolPath())
+
+ipcMain.handle('realRegister:pickEmailPool', async () => {
+  const res = await dialog.showOpenDialog({
+    title: '选择邮箱池文件',
+    defaultPath: defaultEmailPoolPath(),
+    properties: ['openFile'],
+    filters: [{ name: 'Text', extensions: ['txt'] }],
+  })
+  if (res.canceled || !res.filePaths[0]) return { ok: false, canceled: true as const }
+  return { ok: true, path: res.filePaths[0] }
+})
 
 ipcMain.handle('app:getVersion', () => app.getVersion())
 

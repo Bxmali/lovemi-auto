@@ -79,6 +79,21 @@ button:disabled {
 .brand {
   -webkit-app-region: no-drag;
   padding: 0 8px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+}
+
+.brand-unlock {
+  cursor: default;
+  outline: none;
+}
+
+.brand-unlock:focus,
+.brand-unlock:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .brand-mark {
@@ -194,6 +209,152 @@ button:disabled {
   opacity: 0.55;
   filter: grayscale(0.15);
 }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 6, 10, 0.72);
+  -webkit-app-region: no-drag;
+}
+
+.modal-panel {
+  width: min(92vw, 400px);
+  padding: 1.25rem 1.35rem 1.1rem;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+
+.modal-title {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.modal-desc {
+  margin: 0 0 0.85rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.nav-item-demo {
+  border: 1px dashed rgba(120, 200, 255, 0.35);
+}
+
+.nav-demo-badge {
+  margin-left: auto;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  color: #dff4ff;
+  background: rgba(80, 160, 220, 0.35);
+  border: 1px solid rgba(120, 200, 255, 0.45);
+}
+
+.demo-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  vertical-align: middle;
+  margin-left: 0.35rem;
+  color: #dff4ff;
+  background: rgba(80, 160, 220, 0.3);
+  border: 1px solid rgba(120, 200, 255, 0.4);
+}
+
+.real-register-pool-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 1rem;
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.pool-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.84rem;
+}
+
+.pool-path {
+  flex: 1;
+  min-width: 200px;
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pool-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.real-register-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+@media (max-width: 900px) {
+  .real-register-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.field-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.textarea-tall {
+  min-height: 200px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.notice-warn {
+  margin-bottom: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  background: rgba(255, 180, 80, 0.12);
+  border: 1px solid rgba(255, 180, 80, 0.35);
+  font-size: 0.82rem;
+  color: #ffd9a8;
+}
+
+.chip-success { color: #7dffb0; }
+.chip-failed { color: #ff8f8f; }
+.chip-skipped { color: #a8b0c0; }
+.chip-running { color: #8fd4ff; }
+.chip-pending { color: var(--muted); }
 
 .nav-item.placeholder {
   opacity: 0.55;
@@ -603,6 +764,56 @@ button:focus-visible {
 .kv dd {
   margin: 0;
   word-break: break-all;
+}
+
+.section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.section-head-row h3 {
+  margin: 0;
+}
+
+.btn-xs {
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  min-height: 0;
+}
+
+.credential-reveal {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--pink) 35%, transparent);
+  background: color-mix(in srgb, var(--pink) 8%, transparent);
+  color: inherit;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  word-break: break-all;
+  text-align: left;
+  cursor: pointer;
+}
+
+.credential-copy-hint {
+  opacity: 0.65;
+  flex: 0 0 auto;
+}
+
+.credential-value {
+  flex: 1 1 auto;
+}
+
+.credential-masked {
+  color: var(--muted);
 }
 
 .code-box {

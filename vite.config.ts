@@ -48,7 +48,7 @@ export default defineConfig({
           plugins: [copyWatermarkScript()],
           build: {
             rollupOptions: {
-              external: ['electron', 'undici', 'node:sqlite'],
+              external: ['electron', 'undici', 'node:sqlite', 'proxy-chain', 'https-proxy-agent'],
             },
           },
         },
@@ -58,7 +58,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['electron', 'undici', 'node:sqlite'],
+              external: ['electron', 'undici', 'node:sqlite', 'proxy-chain', 'https-proxy-agent'],
             },
           },
         },

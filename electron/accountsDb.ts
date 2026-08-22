@@ -18,6 +18,26 @@ function encPath() {
   return path.join(app.getPath('userData'), 'accounts.enc')
 }
 
+function clearedMarkerPath() {
+  return path.join(app.getPath('userData'), 'accounts.cleared')
+}
+
+function isAccountsClearedMarker() {
+  return fs.existsSync(clearedMarkerPath())
+}
+
+function setAccountsClearedMarker() {
+  fs.writeFileSync(clearedMarkerPath(), new Date().toISOString(), 'utf8')
+}
+
+function clearAccountsClearedMarker() {
+  try {
+    fs.unlinkSync(clearedMarkerPath())
+  } catch {
+    /* ignore */
+  }
+}
+
 /** 同库多表：账号 + 控制台去重/文案/日志 */
 export function openAccountsDb() {
   if (db) return db
@@ -167,11 +187,68 @@ export function countAccounts(): number {
   return Number(row?.n || 0)
 }
 
+/** 单条 upsert（真实注册入库） */
+export function upsertAccount(account: StoredAccount): { ok: boolean; error?: string } {
+  const raw = loadAccountsJson()
+  let accounts: StoredAccount[] = []
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      if (Array.isArray(parsed)) accounts = parsed as StoredAccount[]
+    } catch {
+      accounts = []
+    }
+  }
+  const email = String(account.email).toLowerCase()
+  const idx = accounts.findIndex((a) => String(a.email || '').toLowerCase() === email)
+  if (idx >= 0) {
+    accounts[idx] = { ...accounts[idx], ...account, id: accounts[idx]!.id || account.id }
+  } else {
+    accounts.push(account)
+  }
+  const result = saveAccountsJson(JSON.stringify(accounts))
+  return result.ok ? { ok: true } : { ok: false, error: result.error }
+}
+
+/** 强制清空邮箱库存（绕过 saveAccountsJson 的空库存保护） */
+export function clearAllAccounts(): { ok: boolean; error?: string; cleared?: number } {
+  const database = openDb()
+  const prevN = countAccounts()
+  database.exec('BEGIN')
+  try {
+    database.exec('DELETE FROM accounts')
+    database.exec('COMMIT')
+  } catch (err) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+      /* ignore */
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+  try {
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } catch {
+    /* ignore */
+  }
+  try {
+    writeEncBackup('[]')
+    const enc = encPath()
+    if (fs.existsSync(`${enc}.bak`)) fs.unlinkSync(`${enc}.bak`)
+  } catch {
+    /* 主库已清空，旁路备份失败不阻断 */
+  }
+  setAccountsClearedMarker()
+  return { ok: true, cleared: prevN }
+}
+
 export function loadAccountsJson(): string | null {
   const rows = openDb().prepare('SELECT payload FROM accounts ORDER BY email COLLATE NOCASE').all() as Array<{
     payload: string
   }>
   if (!rows.length) {
+    // 用户主动清空后，禁止从 enc / 仓库备份自动恢复
+    if (isAccountsClearedMarker()) return null
     // 首次：本机 enc → 仓库 backups/ 明文（Mac→Windows 换机时 enc 解不开）
     const migrated = migrateFromEncIfNeeded()
     if (migrated !== null) return migrated
@@ -248,6 +325,7 @@ export function saveAccountsJson(plaintext: string): {
   // 旁路备份一份 enc（失败不影响主存储）
   try {
     writeEncBackup(plaintext)
+    clearAccountsClearedMarker()
   } catch {
     /* ignore */
   }

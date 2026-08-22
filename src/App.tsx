@@ -8,6 +8,7 @@ import { CopyLibraryPage } from './pages/CopyLibraryPage'
 import { CreateCharacterPage } from './pages/CreateCharacterPage'
 import { CaptionGenPage } from './pages/CaptionGenPage'
 import { FeatureMaterialPage } from './pages/FeatureMaterialPage'
+import { RealRegisterPage } from './pages/RealRegisterPage'
 import { useEmailStore } from './store/emailStore'
 import type { EmailAccount } from './types/email'
 import { runEnterShell, runNavSpotlight, pauseNavSpotlight } from './motion/timelines'
@@ -16,10 +17,17 @@ import { registerAllUnregisteredReady } from './services/lovemiRegister'
 import { reloadAccountsFromDisk } from './services/reloadAccounts'
 import { hydrateSettings } from './store/settingsStore'
 import { useSecurityLogStore } from './store/securityLogStore'
+import {
+  DEMO_CLICK_WINDOW_MS,
+  DEMO_CLICKS,
+  clearLegacyDemoUnlockFlag,
+  verifyDemoPassword,
+} from './lib/demoUnlock'
 import './styles/theme.css'
 
 type NavId =
   | 'email'
+  | 'realRegister'
   | 'lovemi'
   | 'console'
   | 'createChar'
@@ -30,7 +38,7 @@ type NavId =
   | 'tasks'
   | 'settings'
 
-const NAV: { id: NavId; label: string; ready: boolean; spotlight?: boolean }[] = [
+const NAV: { id: NavId; label: string; ready: boolean; spotlight?: boolean; demo?: boolean }[] = [
   { id: 'email', label: '邮箱管理', ready: true },
   { id: 'lovemi', label: 'Lovemi账号管理', ready: true },
   { id: 'console', label: '控制台', ready: true },
@@ -58,8 +66,68 @@ export default function App() {
   const idleProbedRef = useRef(false)
   const persistGen = useRef(0)
   const lastSavedCount = useRef(0)
+  const [demoNavOpen, setDemoNavOpen] = useState(false)
+  const [unlockModalOpen, setUnlockModalOpen] = useState(false)
+  const [unlockPassword, setUnlockPassword] = useState('')
+  const [unlockBusy, setUnlockBusy] = useState(false)
+  const brandClickRef = useRef({ count: 0, lastAt: 0 })
+
+  const navItems = demoNavOpen
+    ? [
+        NAV[0]!,
+        { id: 'realRegister' as const, label: '真实账号注册', ready: true, demo: true },
+        ...NAV.slice(1),
+      ]
+    : NAV
+
+  const openDemoNav = () => {
+    setDemoNavOpen(true)
+    setNav('realRegister')
+  }
+
+  const prevNavRef = useRef(nav)
+  useEffect(() => {
+    const prev = prevNavRef.current
+    if (prev === 'realRegister' && nav !== 'realRegister') {
+      setDemoNavOpen(false)
+    }
+    prevNavRef.current = nav
+  }, [nav])
+
+  const submitUnlockPassword = () => {
+    if (unlockBusy) return
+    setUnlockBusy(true)
+    void verifyDemoPassword(unlockPassword).then((ok) => {
+      setUnlockBusy(false)
+      if (!ok) {
+        setToast('密码错误')
+        return
+      }
+      setUnlockModalOpen(false)
+      setUnlockPassword('')
+      openDemoNav()
+    })
+  }
+
+  const onBrandActivate = (e: React.MouseEvent | React.PointerEvent) => {
+    if (demoNavOpen) return
+    e.preventDefault()
+    e.stopPropagation()
+    const now = Date.now()
+    if (brandClickRef.current.lastAt && now - brandClickRef.current.lastAt > DEMO_CLICK_WINDOW_MS) {
+      brandClickRef.current = { count: 1, lastAt: now }
+      return
+    }
+    brandClickRef.current.count += 1
+    brandClickRef.current.lastAt = now
+    if (brandClickRef.current.count < DEMO_CLICKS) return
+    brandClickRef.current = { count: 0, lastAt: 0 }
+    setUnlockPassword('')
+    setUnlockModalOpen(true)
+  }
 
   useEffect(() => {
+    clearLegacyDemoUnlockFlag()
     if (rootRef.current) runEnterShell(rootRef.current)
     hydrateSettings()
     useSecurityLogStore.getState().hydrate()
@@ -238,14 +306,19 @@ export default function App() {
   return (
     <div className="app-shell" ref={rootRef}>
       <aside className="sidebar" data-motion="sidebar">
-        <div className="brand">
+        <button
+          type="button"
+          className="brand brand-unlock"
+          onPointerDown={onBrandActivate}
+          aria-label="Sidbear 专属自动化平台"
+        >
           <div className="brand-mark">
-            Lovemi <span>Auto</span>
+            Sidbear
           </div>
           <div className="brand-sub">专属自动化平台</div>
-        </div>
+        </button>
         <nav className="nav" ref={navRef}>
-          {NAV.map((item) => (
+          {navItems.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -253,13 +326,14 @@ export default function App() {
               data-nav-spotlight={item.spotlight ? '1' : undefined}
               className={`nav-item${nav === item.id ? ' active' : ''}${item.ready ? '' : ' placeholder'}${
                 item.spotlight ? ' nav-item-spotlight' : ''
-              }`}
+              }${item.demo ? ' nav-item-demo' : ''}`}
               disabled={!item.ready}
               onClick={() => setNav(item.id)}
             >
               {item.spotlight ? <span className="nav-spotlight-glow" aria-hidden /> : null}
               <span className="nav-item-label">{item.label}</span>
-              {item.spotlight ? <span className="nav-spotlight-badge">点我</span> : null}
+              {item.spotlight ? <span className="nav-spotlight-badge">重点功能</span> : null}
+              {item.demo ? <span className="nav-demo-badge">Demo</span> : null}
               {!item.ready ? ' · 即将推出' : ''}
             </button>
           ))}
@@ -270,6 +344,7 @@ export default function App() {
       </aside>
       <main className="main" data-motion="main">
         {nav === 'email' ? <EmailHub /> : null}
+        {nav === 'realRegister' ? <RealRegisterPage /> : null}
         {nav === 'lovemi' ? <LovemiAccountsPage /> : null}
         {nav === 'console' ? <ConsolePage /> : null}
         {/* 保持挂载：切侧栏不丢创建角色草稿 / 等待中的立绘 */}
@@ -319,6 +394,62 @@ export default function App() {
         /^(槽\d|【槽\d)|全自动|立绘|生图|创建角色|角色已/.test(toast)
       ) ? (
         <div className="toast">{toast}</div>
+      ) : null}
+      {unlockModalOpen ? (
+        <div
+          className="modal-backdrop"
+          onPointerDown={() => {
+            setUnlockModalOpen(false)
+            setUnlockPassword('')
+          }}
+        >
+          <div
+            className="modal-panel"
+            onPointerDown={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-labelledby="unlock-title"
+          >
+            <h2 id="unlock-title" className="modal-title">
+              Demo 功能解锁
+            </h2>
+            <p className="modal-desc">输入二级密码以显示「真实账号注册」</p>
+            <input
+              className="field"
+              type="password"
+              autoFocus
+              placeholder="二级密码"
+              value={unlockPassword}
+              onChange={(e) => setUnlockPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitUnlockPassword()
+                if (e.key === 'Escape') {
+                  setUnlockModalOpen(false)
+                  setUnlockPassword('')
+                }
+              }}
+            />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setUnlockModalOpen(false)
+                  setUnlockPassword('')
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={unlockBusy || !unlockPassword.trim()}
+                onClick={submitUnlockPassword}
+              >
+                {unlockBusy ? '验证中…' : '解锁'}
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   )

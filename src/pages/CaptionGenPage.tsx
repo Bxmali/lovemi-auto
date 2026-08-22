@@ -550,7 +550,13 @@ export function CaptionGenPage({ active }: { active: boolean }) {
           <button
             type="button"
             className="btn btn-ghost"
-            onClick={() => void window.lovemi?.tgautoBatchCancel?.()}
+            onClick={() => {
+              setTgLog((prev) => [...prev.slice(-80), '正在取消群发（中断当前请求）…'])
+              setToast('正在取消…')
+              void window.lovemi?.tgautoBatchCancel?.().then(() => {
+                setTgBatchBusy(false)
+              })
+            }}
           >
             取消群发
           </button>
@@ -561,7 +567,8 @@ export function CaptionGenPage({ active }: { active: boolean }) {
         <div className="tgauto-batch-panel" data-motion="card">
           <h3>TGAuto 一键群发（与上方「粘贴生成」独立）</h3>
           <p className="settings-hint" style={{ margin: '0 0 10px' }}>
-            自动扫描推特资源里每个角色的 jpg+mp4，生成 Lovemi 标准文案，用转发号轮流发相册（不是文件）。已发过的默认跳过。
+            自动扫描推特资源里每个角色的 jpg+mp4，生成 Lovemi 标准文案，用转发号轮流发相册。发送成功会把文件名加上「_已发送」。
+            FLOOD 冷却号会本轮跳过。点「取消群发」会立刻中断当前请求。
           </p>
           <div className="toolbar" style={{ flexWrap: 'wrap', gap: 10, margin: 0 }}>
             <label className="chip" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

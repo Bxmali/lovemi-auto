@@ -80,6 +80,64 @@ contextBridge.exposeInMainWorld('lovemi', {
   loadAccounts: () => ipcRenderer.invoke('accounts:load') as Promise<string | null>,
   saveAccounts: (plaintext: string) =>
     ipcRenderer.invoke('accounts:save', plaintext) as Promise<{ ok: boolean; encrypted: boolean }>,
+  clearAllAccounts: () =>
+    ipcRenderer.invoke('accounts:clearAll') as Promise<{ ok: boolean; cleared?: number; error?: string }>,
+  demoVerifyUnlock: (password: string) =>
+    ipcRenderer.invoke('demo:verifyUnlock', password) as Promise<{ ok: boolean }>,
+  realRegisterProbe: (input: {
+    proxyUrl: string
+    localUpstream?: { host?: string; ports?: number[] }
+  }) =>
+    ipcRenderer.invoke('realRegister:probe', input) as Promise<{
+      ok: boolean
+      ip?: string
+      error?: string
+      localUpstreamUrl?: string
+    }>,
+  realRegisterRunOne: (input: {
+    email: string
+    emailPassword: string
+    refreshToken: string
+    clientId: string
+    proxyUrl: string
+    proxyHost: string
+    region?: string
+    localUpstream?: { host?: string; ports?: number[] }
+  }) =>
+    ipcRenderer.invoke('realRegister:runOne', input) as Promise<{
+      ok: boolean
+      email: string
+      error?: string
+      stage?: string
+      egressIp?: string
+      reclaimed?: boolean
+      accountId?: string
+      lovemiPassword?: string
+      sessionToken?: string
+      userId?: string
+      displayName?: string
+    }>,
+  realRegisterCancel: () => ipcRenderer.invoke('realRegister:cancel') as Promise<{ ok: boolean }>,
+  realRegisterResetCancel: () => ipcRenderer.invoke('realRegister:resetCancel') as Promise<{ ok: boolean }>,
+  realRegisterLoadEmailPool: (customPath?: string) =>
+    ipcRenderer.invoke('realRegister:loadEmailPool', customPath) as Promise<{
+      ok: boolean
+      path: string
+      total: number
+      excluded: number
+      available: number
+      badLines: number
+      accounts: Array<{ email: string; password?: string; refreshToken?: string; clientId?: string }>
+      error?: string
+    }>,
+  realRegisterDefaultEmailPoolPath: () =>
+    ipcRenderer.invoke('realRegister:defaultEmailPoolPath') as Promise<string>,
+  realRegisterPickEmailPool: () =>
+    ipcRenderer.invoke('realRegister:pickEmailPool') as Promise<{
+      ok: boolean
+      canceled?: boolean
+      path?: string
+    }>,
   probeAccount: (input: ProbeInput) =>
     ipcRenderer.invoke('mail:probe', input) as Promise<ProbeResult>,
   probeBatch: (inputs: ProbeInput[]) =>

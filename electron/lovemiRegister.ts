@@ -1,5 +1,6 @@
 import { fetch as undiciFetch } from 'undici'
 import { acquireAccessToken, dispatcherFor } from './mailProbe'
+import { headersFromProfile, type RegisterHttpProfile } from './registerFingerprint'
 
 const API_BASE = 'https://api.lovemi.ai'
 
@@ -13,6 +14,10 @@ export type RegisterInput = {
   displayName?: string
   /** 已知已注册：跳过注册验证码，直接重置接管 */
   preferReclaim?: boolean
+  /** 真实注册：每任务随机设备头 */
+  httpProfile?: RegisterHttpProfile
+  /** 收到 OTP 后等待再提交 register（模拟人工输入） */
+  otpDelayMs?: number
 }
 
 export type RegisterResult = {
@@ -76,6 +81,7 @@ async function apiPost(
   path: string,
   body: Record<string, unknown>,
   proxyUrl?: string,
+  httpProfile?: RegisterHttpProfile,
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; error?: string }> {
   const url = `${API_BASE}${path}`
   try {
@@ -83,8 +89,7 @@ async function apiPost(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'Accept-Language': 'zh-CN',
+        ...headersFromProfile(httpProfile),
       },
       body: JSON.stringify(body),
       dispatcher: dispatcherFor(proxyUrl, url),
@@ -194,10 +199,12 @@ export async function registerLovemiAccount(input: RegisterInput): Promise<Regis
     input.password && input.password.length >= 12 ? input.password : genPassword()
 
   const afterMs = Date.now()
+  const profile = input.httpProfile
   let challenge = await apiPost(
     '/v1/auth/email-challenges',
     { email, purpose: 'register' },
     input.proxyUrl,
+    profile,
   )
   if (!challenge.ok && /too many|rate|429/i.test(challenge.error || '')) {
     await sleep(4000)
@@ -205,6 +212,7 @@ export async function registerLovemiAccount(input: RegisterInput): Promise<Regis
       '/v1/auth/email-challenges',
       { email, purpose: 'register' },
       input.proxyUrl,
+      profile,
     )
   }
   if (!challenge.ok) {
@@ -255,6 +263,9 @@ export async function registerLovemiAccount(input: RegisterInput): Promise<Regis
     otpSource = 'graph_mail'
   }
 
+  const otpDelay = input.otpDelayMs ?? 0
+  if (otpDelay > 0) await sleep(otpDelay)
+
   const reg = await apiPost(
     '/v1/auth/register',
     {
@@ -267,6 +278,7 @@ export async function registerLovemiAccount(input: RegisterInput): Promise<Regis
       display_name: input.displayName || email.split('@')[0],
     },
     input.proxyUrl,
+    profile,
   )
 
   if (!reg.ok) {
